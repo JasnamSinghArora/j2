@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Standard Library — J</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <p class="brand"><a href="index.html">J</a></p>
+    <p class="tagline">Instant to run, native-fast when it counts.</p>
+    <nav>
+      <h3>Guide</h3>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="getting-started.html">Getting Started</a></li>
+        <li><a href="language.html">Language Guide</a></li>
+      </ul>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="stdlib.html">Standard Library</a></li>
+        <li><a href="cli.html">CLI Reference</a></li>
+        <li><a href="parallelism.html">Auto-Parallelism</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content"><div class="inner">
+    <h1>Standard Library</h1>
+    <p class="lead">Built-in functions are always available by name. Grouped utilities live
+    in modules, accessed with dot syntax (<code>math.cbrt(x)</code>, <code>time.now()</code>).</p>
+
+    <h2>Built-in functions</h2>
+
+    <h3>Input / output</h3>
+    <table>
+      <tr><th>Function</th><th>Description</th></tr>
+      <tr><td><code>print(v)</code></td><td>Print a value followed by a newline.</td></tr>
+      <tr><td><code>fmt(template, ...)</code></td><td>Format text; each <code>{}</code> is replaced by the next argument.</td></tr>
+      <tr><td><code>input()</code></td><td>Read a line from standard input.</td></tr>
+    </table>
+
+    <h3>Conversion and inspection</h3>
+    <table>
+      <tr><td><code>num(text)</code></td><td>Parse text into a number.</td></tr>
+      <tr><td><code>str(v)</code></td><td>Convert a value to its text form.</td></tr>
+      <tr><td><code>len(v)</code></td><td>Length of a sequence, map, or text.</td></tr>
+      <tr><td><code>type_of(v)</code></td><td>The type name of a value.</td></tr>
+    </table>
+
+    <h3>Sequences</h3>
+    <table>
+      <tr><td><code>make_seq(n, init)</code></td><td>A sequence of length <code>n</code> filled with <code>init</code>.</td></tr>
+      <tr><td><code>push(s, x)</code></td><td>Append <code>x</code> to a mutable sequence, in place.</td></tr>
+      <tr><td><code>sum(s)</code> · <code>min(s)</code> · <code>max(s)</code></td><td>Reduce a sequence to a single value.</td></tr>
+      <tr><td><code>sort(s)</code> · <code>sort_by(s, cmp)</code></td><td>Sorted copy (optionally by a comparator function).</td></tr>
+      <tr><td><code>reverse(s)</code> · <code>unique(s)</code></td><td>Reversed / de-duplicated copy.</td></tr>
+      <tr><td><code>slice(s, i, j)</code></td><td>Sub-sequence from index <code>i</code> to <code>j</code>.</td></tr>
+      <tr><td><code>take(s, n)</code> · <code>skip(s, n)</code></td><td>First <code>n</code> / all but the first <code>n</code>.</td></tr>
+      <tr><td><code>contains(s, x)</code> · <code>count(s)</code></td><td>Membership test / element count.</td></tr>
+      <tr><td><code>map(s, f)</code> · <code>filter(s, f)</code> · <code>reduce(s, init, f)</code></td><td>Higher-order transforms.</td></tr>
+      <tr><td><code>zip(a, b)</code> · <code>enumerate(s)</code> · <code>flatten(s)</code></td><td>Combine / index / un-nest.</td></tr>
+      <tr><td><code>join(s, sep)</code> · <code>collect(flow)</code></td><td>Join into text / materialize a flow.</td></tr>
+    </table>
+
+    <h3>Math</h3>
+    <table>
+      <tr><td><code>abs</code> · <code>sqrt</code> · <code>pow(b, e)</code></td><td>Absolute value, square root, power.</td></tr>
+      <tr><td><code>floor</code> · <code>ceil</code> · <code>round</code></td><td>Rounding.</td></tr>
+      <tr><td><code>clamp(x, lo, hi)</code></td><td>Constrain <code>x</code> to a range.</td></tr>
+    </table>
+
+    <h3>Text</h3>
+    <table>
+      <tr><td><code>upper(t)</code> · <code>lower(t)</code> · <code>trim(t)</code></td><td>Case conversion, whitespace trimming.</td></tr>
+      <tr><td><code>split(t, sep)</code></td><td>Split text into a sequence.</td></tr>
+    </table>
+
+    <h2>Modules</h2>
+    <p>Modules group related functions and are called with dot syntax. The
+    <code>fs</code>, <code>proc</code>, and <code>http</code> modules touch the outside world
+    and are <strong>denied by default</strong> — enable them per run with capability flags
+    (see the <a href="cli.html">CLI Reference</a>).</p>
+
+    <h3>math</h3>
+    <p>Floating-point math: <code>sin</code>, <code>cos</code>, <code>tan</code>,
+    <code>exp</code>, <code>ln</code>, <code>log</code>, <code>log2</code>, <code>log10</code>,
+    <code>cbrt</code>, <code>trunc</code>, <code>sign</code>, <code>clamp</code>, and more.</p>
+<pre><code>print(math.sqrt(2.0))
+print(math.log2(1024.0))   # 10</code></pre>
+
+    <h3>stats</h3>
+    <p>Summary statistics over a sequence: <code>count</code>, <code>sum</code>,
+    <code>avg</code>, <code>median</code>, <code>mode</code>, <code>range</code>.</p>
+
+    <h3>str</h3>
+    <p>Text operations beyond the built-ins: <code>replace</code>, <code>replace_n</code>,
+    <code>find</code>, <code>rfind</code>, <code>starts_with</code>, <code>ends_with</code>,
+    and byte conversions.</p>
+
+    <h3>json</h3>
+    <p>Read and write JSON: <code>parse(text)</code>, <code>stringify(value)</code>,
+    <code>stringify_pretty(value)</code>.</p>
+<pre><code>data = json.parse("{\"n\": 42}")
+print(data["n"])                   # 42
+print(json.stringify([1, 2, 3]))   # [1,2,3]</code></pre>
+
+    <h3>regex</h3>
+    <p>Regular-expression matching; match results expose <code>start</code>, <code>end</code>,
+    and <code>text</code>.</p>
+
+    <h3>time / date</h3>
+    <p><code>time.now()</code> and <code>time.elapsed_ms(t)</code> for timing.
+    <code>date</code> exposes <code>epoch_secs</code>, <code>epoch_millis</code>,
+    <code>year</code>, <code>month</code>, <code>day</code>, <code>hour</code>.</p>
+<pre><code>t = time.now()
+# ... work ...
+print(fmt("took {} ms", time.elapsed_ms(t)))</code></pre>
+
+    <h3>rand</h3>
+    <p>Random numbers: <code>seed(n)</code>, <code>next_int()</code>, <code>next_float()</code>,
+    <code>next_range(lo, hi)</code>. Seed for reproducible output.</p>
+
+    <h3>hash / hex / base64</h3>
+    <p>Digests and encodings: <code>hash.xxhash</code>, <code>hash.md5</code>,
+    <code>hash.sha256</code>; <code>hex.encode</code> / <code>hex.decode</code>;
+    <code>base64.encode</code> / <code>decode</code> (and the URL-safe variants).</p>
+
+    <h3>bits</h3>
+    <p>Bitwise functions as an alternative to the operators: <code>band</code>,
+    <code>bor</code>, <code>bxor</code>, <code>bnot</code>, <code>shl</code>, <code>shr</code>.</p>
+
+    <h3>sys</h3>
+    <p>System information: <code>os</code>, <code>arch</code>, <code>hostname</code>,
+    <code>username</code>, <code>cpu_count</code>.</p>
+
+    <h3>fs <span class="mono" style="font-weight:400;color:var(--muted)">— needs --allow-fs</span></h3>
+    <p>Filesystem access: <code>read_file</code>, <code>write_file</code>,
+    <code>size</code>, <code>is_dir</code>, <code>is_file</code>, <code>modified_epoch</code>.</p>
+
+    <h3>proc <span class="mono" style="font-weight:400;color:var(--muted)">— needs --allow-proc</span></h3>
+    <p>Run processes and read the environment: process results expose <code>stdout</code>,
+    <code>stderr</code>, <code>status</code>; plus <code>argv</code>, <code>env</code>,
+    <code>set_env</code>.</p>
+
+    <h3>http <span class="mono" style="font-weight:400;color:var(--muted)">— needs --allow-net</span></h3>
+    <p>HTTP requests: <code>get</code>, <code>post</code>, <code>post_json</code>; responses
+    expose <code>status</code>, <code>body</code>, <code>headers</code>.</p>
+
+    <h3>async</h3>
+    <p>Concurrency helpers: <code>parallel(tasks)</code> runs functions concurrently,
+    <code>sleep_ms(n)</code>, and async I/O like <code>http_get</code> / <code>read_file</code>.</p>
+
+    <div class="note">
+      <p>This page summarizes the most common entry points. The set of functions grows with
+      the language; the authoritative list is the runtime source.</p>
+    </div>
+
+    <footer>J documentation.</footer>
+  </div></main>
+</div>
+<script src="site.js"></script>
+</body>
+</html>

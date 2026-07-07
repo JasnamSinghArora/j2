@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Language Guide — J</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <p class="brand"><a href="index.html">J</a></p>
+    <p class="tagline">Instant to run, native-fast when it counts.</p>
+    <nav>
+      <h3>Guide</h3>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="getting-started.html">Getting Started</a></li>
+        <li><a href="language.html">Language Guide</a></li>
+      </ul>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="stdlib.html">Standard Library</a></li>
+        <li><a href="cli.html">CLI Reference</a></li>
+        <li><a href="parallelism.html">Auto-Parallelism</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content"><div class="inner">
+    <h1>Language Guide</h1>
+    <p class="lead">The complete J language: values, bindings, control flow, functions,
+    data structures, classes, and error handling.</p>
+
+    <h2>Comments</h2>
+    <p>Comments start with <code>#</code> and run to the end of the line.</p>
+<pre><code># This is a comment.
+x = 1   # so is this</code></pre>
+
+    <h2>Values and types</h2>
+    <p>J has a small set of built-in value types:</p>
+    <table>
+      <tr><th>Type</th><th>Example</th><th>Notes</th></tr>
+      <tr><td><code>int</code></td><td><code>42</code>, <code>-7</code></td><td>64-bit signed integer</td></tr>
+      <tr><td><code>float</code></td><td><code>3.14</code>, <code>1.0</code></td><td>64-bit floating point</td></tr>
+      <tr><td><code>text</code></td><td><code>"hello"</code></td><td>a string of characters</td></tr>
+      <tr><td><code>bool</code></td><td><code>true</code>, <code>false</code></td><td></td></tr>
+      <tr><td><code>null</code></td><td><code>null</code></td><td>the absence of a value</td></tr>
+      <tr><td><code>seq</code></td><td><code>[1, 2, 3]</code></td><td>an ordered sequence</td></tr>
+      <tr><td><code>map</code></td><td><code>{"a": 1}</code></td><td>a text-keyed map</td></tr>
+    </table>
+    <p>Numbers mix as you'd expect: an operation involving a <code>float</code> produces a
+    <code>float</code>. Integer division yields an integer when it divides evenly and a
+    float otherwise (<code>6 / 2</code> is <code>3</code>; <code>7 / 2</code> is
+    <code>3.5</code>). Use <code>num(...)</code> to convert text to a number.</p>
+
+    <h2>Bindings</h2>
+    <p>A name is bound with <code>=</code> (constant) or <code>:=</code> (mutable). A constant
+    cannot be reassigned; a mutable can.</p>
+<pre><code>pi = 3.14159      # constant — reassigning it is an error
+count := 0        # mutable
+count = count + 1 # ok
+count += 1        # ok (compound assignment)
+count++           # ok (increment)</code></pre>
+    <p>Compound assignment operators are <code>+=</code>, <code>-=</code>, <code>*=</code>,
+    <code>/=</code>, and <code>%=</code>; <code>++</code> and <code>--</code> increment and
+    decrement. A function-local binding may shadow a same-named binding from an outer
+    scope.</p>
+
+    <h2>Operators</h2>
+    <table>
+      <tr><th>Category</th><th>Operators</th></tr>
+      <tr><td>Arithmetic</td><td><code>+</code> <code>-</code> <code>*</code> <code>/</code> <code>%</code> (remainder) <code>**</code> (exponent)</td></tr>
+      <tr><td>Comparison</td><td><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td></tr>
+      <tr><td>Logical</td><td><code>and</code> <code>or</code> <code>not</code></td></tr>
+      <tr><td>Bitwise</td><td><code>&amp;</code> (and) <code>|</code> (or) <code>^</code> (xor) <code>~</code> (not) <code>&lt;&lt;</code> (shift left)</td></tr>
+      <tr><td>Pipe</td><td><code>&gt;&gt;</code> — apply a function over a sequence</td></tr>
+      <tr><td>Range</td><td><code>a..b</code> — inclusive range (see below)</td></tr>
+    </table>
+    <p><code>and</code> and <code>or</code> short-circuit. Note that <code>^</code> is bitwise
+    XOR — use <code>**</code> for exponentiation.</p>
+<pre><code>print(2 ** 10)        # 1024
+print(13 % 5)         # 3
+print(true and false) # false
+print(6 & 3)          # 2  (bitwise)</code></pre>
+
+    <h2>Ranges</h2>
+    <p>A range <code>a..b</code> is <strong>inclusive of both ends</strong>. <code>1..5</code>
+    is <code>1, 2, 3, 4, 5</code>. Ranges are most often used to drive a loop:</p>
+<pre><code>for i in 0..4 { print(i) }   # prints 0 1 2 3 4</code></pre>
+
+    <h2>Control flow</h2>
+
+    <h3>Conditionals</h3>
+<pre><code>if score &gt;= 90 {
+    print("A")
+} else if score &gt;= 80 {
+    print("B")
+} else {
+    print("C")
+}</code></pre>
+
+    <h3>Loops</h3>
+    <p>Loop over a range or over the elements of a sequence:</p>
+<pre><code>for i in 1..n { ... }       # inclusive range
+for item in items { ... }   # each element</code></pre>
+    <p>A loop may include a filter — <code>for x in xs if pred</code> runs the body only for
+    elements where the predicate function returns true:</p>
+<pre><code>func is_even(n) = n % 2 == 0
+for x in nums if is_even { print(x) }</code></pre>
+    <p><code>repeat</code> loops while a condition holds:</p>
+<pre><code>i := 0
+repeat i &lt; 3 {
+    print(i)
+    i += 1
+}</code></pre>
+    <p>Inside a loop, <code>stop</code> breaks out and <code>skip</code> continues with the
+    next iteration. Both accept an optional condition (<code>stop if done</code>).</p>
+
+    <h3>Assertions</h3>
+<pre><code>assert x &gt; 0
+assert x &gt; 0, "x must be positive"</code></pre>
+
+    <h2>Functions</h2>
+    <p>A function is defined with <code>func</code>. The body is either a single expression
+    or a block. In a block, <code>give</code> returns a value (and exits the function early):</p>
+<pre><code># expression body
+func square(x) = x * x
+
+# block body
+func classify(n) = {
+    if n &lt; 0 { give "negative" }
+    if n == 0 { give "zero" }
+    give "positive"
+}
+
+print(square(9))        # 81
+print(classify(-3))     # negative</code></pre>
+    <p>Functions may call themselves recursively:</p>
+<pre><code>func fib(n) = {
+    if n &lt; 2 { give n }
+    give fib(n - 1) + fib(n - 2)
+}</code></pre>
+
+    <h2>Lambdas and higher-order functions</h2>
+    <p>An anonymous function is written <code>func(params) = expr</code>. Functions are
+    values: you can pass them to the higher-order built-ins
+    <code>map</code>, <code>filter</code>, <code>reduce</code>, and <code>sort_by</code>.</p>
+<pre><code>nums = [1, 2, 3, 4, 5]
+
+squares = map(nums, func(x) = x * x)            # [1, 4, 9, 16, 25]
+evens   = filter(nums, func(x) = x % 2 == 0)    # [2, 4]
+total   = reduce(nums, 0, func(a, b) = a + b)   # 15
+desc    = sort_by(nums, func(a, b) = b - a)     # [5, 4, 3, 2, 1]</code></pre>
+    <p>The pipe operator <code>&gt;&gt;</code> applies a function across a sequence — a concise
+    alternative to <code>map</code>:</p>
+<pre><code>func sq(x) = x * x
+result = nums &gt;&gt; sq            # [1, 4, 9, 16, 25]</code></pre>
+
+    <h2>Sequences</h2>
+    <p>A sequence is an ordered, indexable collection written with square brackets. Indexing
+    is zero-based; assigning to an index updates the element in place.</p>
+<pre><code>xs = [10, 20, 30]
+print(xs[0])          # 10
+print(len(xs))        # 3
+
+ys := make_seq(3, 0)  # [0, 0, 0]
+ys[1] = 99            # [0, 99, 0]
+push(ys, 7)           # append -> [0, 99, 0, 7]</code></pre>
+    <p>Common operations: <code>len</code>, <code>sum</code>, <code>min</code>,
+    <code>max</code>, <code>sort</code>, <code>reverse</code>, <code>slice</code>,
+    <code>contains</code>, <code>unique</code>, <code>zip</code>, <code>enumerate</code>,
+    <code>take</code>, <code>skip</code>, <code>flatten</code>, and <code>join</code>. See the
+    <a href="stdlib.html">Standard Library</a> for the full list.</p>
+
+    <h2>Maps</h2>
+    <p>A map associates text keys with values. Read and write entries with index syntax
+    <code>m[key]</code> or member syntax <code>m.key</code>.</p>
+<pre><code>scores = {"alice": 90, "bob": 85}
+print(scores["alice"])    # 90
+print(scores.bob)         # 85
+
+prices := {"pen": 2}
+prices["book"] = 12       # add / update</code></pre>
+
+    <h2>Text</h2>
+    <p>Text values are strings. Build formatted text with <code>fmt</code>, where
+    <code>{}</code> is a placeholder filled by the following arguments. The
+    <code>str</code> module provides operations like <code>split</code>,
+    <code>replace</code>, <code>find</code>, <code>starts_with</code>, and
+    <code>ends_with</code>.</p>
+<pre><code>name = "Ada"
+print(fmt("Hello, {}! You have {} messages.", name, 3))
+print(len("hello"))               # 5
+print(upper("hello"))             # HELLO
+parts = split("a,b,c", ",")       # ["a", "b", "c"]</code></pre>
+
+    <h2>Classes</h2>
+    <p>A class is defined by assigning <code>class { ... }</code> to a name. Fields are
+    declared with a type; methods use <code>func</code>-like syntax with a return type and
+    refer to fields directly (or through <code>self</code>). Construct an instance by calling
+    the class — positionally or with named fields.</p>
+<pre><code>Point = class {
+    x: float
+    y: float
+    dist() -&gt; float = sqrt(x * x + y * y)
+    scale(k: float) -&gt; float = (x * x + y * y) * k
+}
+
+p = Point(x: 3.0, y: 4.0)   # named fields
+q = Point(1.0, 2.0)         # positional
+print(p.dist())             # 5
+print(p.x)                  # 3</code></pre>
+    <p>A class may extend another with <code>extends</code>, inheriting its fields and
+    methods.</p>
+
+    <h2>Error handling</h2>
+    <p>Runtime errors belong to typed error classes (for example
+    <code>ZeroDivisionError</code>, <code>ConversionError</code>, <code>IndexError</code>,
+    <code>ArithmeticError</code>). Handle them with a <code>try</code> block followed by one
+    or more <code>else</code> handlers; a bare <code>else</code> catches anything not matched
+    above it.</p>
+<pre><code>try {
+    x = 10 / 0
+} else ZeroDivisionError {
+    print("caught: division by zero")
+} else {
+    print("some other error")
+}</code></pre>
+    <p>Handlers match by class, and a parent class catches its subclasses — <code>else
+    ArithmeticError</code> catches <code>ZeroDivisionError</code> and
+    <code>OverflowError</code>, and <code>else Error</code> catches essentially everything.</p>
+
+    <h2>Modules and imports</h2>
+    <p>Split a program across files with <code>import</code>. The imported file's source is
+    inlined at that point; imports are resolved transitively and cycles are broken (importing
+    the same file twice is a no-op).</p>
+<pre><code>import "util.j"        # next to this file, or in ./lib/, or on J_PATH
+import "/abs/path.j"   # absolute path</code></pre>
+    <p>A non-absolute import is searched for, in order: next to the importing file, then in
+    that file's <code>lib/</code> directory, then in each colon-separated entry of the
+    <code>J_PATH</code> environment variable. That's the whole module system — a convention,
+    not a package manager: a "package" is just a directory of <code>.j</code> files on the
+    search path. A typical project keeps its own modules under <code>lib/</code> and imports
+    them by name.</p>
+
+    <footer>J documentation.</footer>
+  </div></main>
+</div>
+<script src="site.js"></script>
+</body>
+</html>

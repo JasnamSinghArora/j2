@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>J — Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <p class="brand"><a href="index.html">J</a></p>
+    <p class="tagline">Instant to run, native-fast when it counts.</p>
+    <nav>
+      <h3>Guide</h3>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="getting-started.html">Getting Started</a></li>
+        <li><a href="language.html">Language Guide</a></li>
+      </ul>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="stdlib.html">Standard Library</a></li>
+        <li><a href="cli.html">CLI Reference</a></li>
+        <li><a href="parallelism.html">Auto-Parallelism</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content"><div class="inner">
+    <h1>The J Programming Language</h1>
+    <p class="lead">J is a small, dynamically-typed language that runs instantly through an
+    interpreter and compiles to parallel native code when you need speed.</p>
+
+    <p>You write ordinary code — functions, sequences, maps, classes — and run it with
+    <code>j file.j</code>. Most programs execute immediately, with no build step. When a
+    program is compute-heavy, <code>j build</code> compiles it to a native binary and
+    parallelizes the hot loops automatically. Installing J installs everything it needs;
+    there is no separate toolchain to manage.</p>
+
+    <h2>Hello, world</h2>
+<pre><code>print("Hello, world")</code></pre>
+    <p>Run it:</p>
+<pre><code data-nohl>$ j hello.j
+Hello, world</code></pre>
+
+    <h2>A taste</h2>
+<pre><code># Find the longest word.
+words = ["apple", "banana", "fig", "grapefruit"]
+
+func longest(ws) = {
+    best := ""
+    for w in ws {
+        if len(w) > len(best) { best = w }
+    }
+    give best
+}
+
+print(fmt("longest: {} ({} chars)", longest(words), len(longest(words))))</code></pre>
+    <p>This shows the essentials: a constant binding (<code>=</code>), a mutable one
+    (<code>:=</code>), a function with a block body, a <code>for</code> loop, and string
+    formatting with <code>fmt</code>.</p>
+
+    <h2>Why J</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>Instant</h3>
+        <p>Programs run through an interpreter by default — no compile wait. Good for
+        scripts, learning, and fast iteration.</p>
+      </div>
+      <div class="card">
+        <h3>Fast when it matters</h3>
+        <p><code>j build</code> compiles to native code and parallelizes idiomatic loops
+        (reductions, element-wise maps, matrix×vector) across cores — no annotations.</p>
+      </div>
+      <div class="card">
+        <h3>Self-contained</h3>
+        <p>You install J, not a toolchain. No system Rust, no package manager, no network
+        needed to compile a program.</p>
+      </div>
+      <div class="card">
+        <h3>Familiar</h3>
+        <p>A small, readable syntax: constants and mutables, functions and lambdas,
+        classes, sequences and maps, and typed error handling.</p>
+      </div>
+    </div>
+
+    <h2>Where to go next</h2>
+    <ul>
+      <li><a href="getting-started.html">Getting Started</a> — install J and run your first programs.</li>
+      <li><a href="language.html">Language Guide</a> — the complete language, with examples.</li>
+      <li><a href="stdlib.html">Standard Library</a> — built-in functions and modules.</li>
+      <li><a href="cli.html">CLI Reference</a> — the <code>j</code> command and its options.</li>
+      <li><a href="parallelism.html">Auto-Parallelism</a> — how native builds use your cores.</li>
+    </ul>
+
+    <footer>J documentation. Built from the language sources.</footer>
+  </div></main>
+</div>
+<script src="site.js"></script>
+</body>
+</html>

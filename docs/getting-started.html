@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting Started — J</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <p class="brand"><a href="index.html">J</a></p>
+    <p class="tagline">Instant to run, native-fast when it counts.</p>
+    <nav>
+      <h3>Guide</h3>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="getting-started.html">Getting Started</a></li>
+        <li><a href="language.html">Language Guide</a></li>
+      </ul>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="stdlib.html">Standard Library</a></li>
+        <li><a href="cli.html">CLI Reference</a></li>
+        <li><a href="parallelism.html">Auto-Parallelism</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content"><div class="inner">
+    <h1>Getting Started</h1>
+    <p class="lead">Install J, run a program, and meet the tools you'll use day to day.</p>
+
+    <h2>Install</h2>
+    <p>J ships as a single self-contained bundle for macOS (Apple&nbsp;Silicon), signed and
+    notarized by Apple. Download the latest release archive from
+    <a href="https://github.com/JasnamSinghArora/j/releases">GitHub&nbsp;Releases</a>,
+    unpack it, and run the installer:</p>
+<pre><code data-nohl>$ tar xzf j-&lt;version&gt;-aarch64-apple-darwin.tar.gz
+$ cd j-&lt;version&gt;-aarch64-apple-darwin
+$ ./install.sh</code></pre>
+    <p>This installs J under <code>~/.j</code> and links the <code>j</code> command onto your
+    <code>PATH</code>. You can change the locations with environment variables:</p>
+<pre><code data-nohl>$ J_PREFIX=/opt/j J_BINDIR=/usr/local/bin ./install.sh</code></pre>
+    <p>The bundle includes everything J needs to compile programs — there is no separate
+    Rust or package-manager install, and no network access is required.</p>
+
+    <div class="note">
+      <p>If <code>j</code> isn't found after installing, add the bin directory to your shell
+      profile, e.g. <code>export PATH="$HOME/.j/bin:$PATH"</code> in <code>~/.zshrc</code>.</p>
+    </div>
+
+    <h2>Run a program</h2>
+    <p>Put this in <code>hello.j</code>:</p>
+<pre><code>print("Hello, world")</code></pre>
+    <p>and run it:</p>
+<pre><code data-nohl>$ j hello.j
+Hello, world</code></pre>
+    <p><code>j file.j</code> runs your program through the interpreter — it starts instantly
+    and touches no compiler. That's the right mode for scripts and while you're writing
+    code.</p>
+
+    <h2>Build for speed</h2>
+    <p>For compute-heavy work, compile to a native binary. The compiler also parallelizes
+    idiomatic loops across your CPU cores automatically (see
+    <a href="parallelism.html">Auto-Parallelism</a>):</p>
+<pre><code data-nohl>$ j build kmeans.j -o kmeans
+$ ./kmeans</code></pre>
+    <p>You can also force the native path for a single run without producing a binary by
+    setting <code>J_FORCE_NATIVE=1</code> (see the <a href="cli.html">CLI Reference</a>).</p>
+
+    <h2>The REPL</h2>
+    <p>Start an interactive session with <code>j repl</code> to try expressions:</p>
+<pre><code data-nohl>$ j repl
+&gt; x = 6 * 7
+&gt; print(x)
+42</code></pre>
+
+    <h2>Editor support</h2>
+    <p>A Visual Studio Code extension provides syntax highlighting, a <em>Run</em> command,
+    and inline error reporting for <code>.j</code> files. Install it from the
+    <code>editors/vscode</code> folder (open it in VS Code and press <kbd>F5</kbd>, or
+    package it with <code>vsce</code>), then open any <code>.j</code> file and press
+    <kbd>Cmd/Ctrl+Shift+R</kbd> to run.</p>
+
+    <h2>A first program</h2>
+    <p>A slightly larger example — a function, a loop, and a conditional:</p>
+<pre><code># fizzbuzz up to n
+func fizzbuzz(n) = {
+    for i in 1..n {
+        if i % 15 == 0 { print("fizzbuzz") }
+        else if i % 3 == 0 { print("fizz") }
+        else if i % 5 == 0 { print("buzz") }
+        else { print(i) }
+    }
+}
+
+fizzbuzz(20)</code></pre>
+    <p>Note that <code>1..n</code> is an <strong>inclusive</strong> range — it includes both
+    <code>1</code> and <code>n</code>. Continue to the
+    <a href="language.html">Language Guide</a> for the full language.</p>
+
+    <footer>J documentation.</footer>
+  </div></main>
+</div>
+<script src="site.js"></script>
+</body>
+</html>
