@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI Reference — J</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <p class="brand"><a href="index.html">J</a></p>
+    <p class="tagline">Instant to run, native-fast when it counts.</p>
+    <nav>
+      <h3>Guide</h3>
+      <ul>
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="getting-started.html">Getting Started</a></li>
+        <li><a href="language.html">Language Guide</a></li>
+      </ul>
+      <h3>Reference</h3>
+      <ul>
+        <li><a href="stdlib.html">Standard Library</a></li>
+        <li><a href="cli.html">CLI Reference</a></li>
+        <li><a href="parallelism.html">Auto-Parallelism</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content"><div class="inner">
+    <h1>CLI Reference</h1>
+    <p class="lead">The <code>j</code> command runs, builds, formats, and inspects J programs.</p>
+
+    <h2>Commands</h2>
+    <table>
+      <tr><th>Command</th><th>Description</th></tr>
+      <tr><td><code>j FILE.j [args...]</code></td><td>Run a program. Uses the interpreter when possible (instant); falls back to a native compile for anything the interpreter doesn't handle. This is the default mode.</td></tr>
+      <tr><td><code>j run FILE.j</code></td><td>Explicitly run through the interpreter.</td></tr>
+      <tr><td><code>j build FILE.j -o OUT</code></td><td>Compile to a native binary at <code>OUT</code>, with auto-parallelism. Use this for speed-critical programs.</td></tr>
+      <tr><td><code>j emit-rust FILE.j</code></td><td>Print the lowered Rust source. Useful for checking that a program parses and lowers, and for understanding what the compiler produces.</td></tr>
+      <tr><td><code>j fmt FILE.j</code></td><td>Reformat a source file in place.</td></tr>
+      <tr><td><code>j repl</code></td><td>Start an interactive session.</td></tr>
+      <tr><td><code>j test [dir]</code></td><td>Run every <code>*.j</code> file under <code>dir</code> (default <code>j-tests</code>) and report a pass/fail summary.</td></tr>
+    </table>
+
+    <h2>How a program runs</h2>
+    <p>By default, <code>j FILE.j</code> tries the interpreter first — it starts instantly and
+    uses no compiler. If a program uses a feature the interpreter doesn't support, J compiles
+    it natively instead (and the Rust toolchain underneath stays hidden — you only ever see
+    your program's output). For compute-heavy programs, prefer <code>j build</code> to get a
+    native, parallelized binary you can run repeatedly.</p>
+
+    <h2>Capabilities</h2>
+    <p>Access to the filesystem, processes, and the network is <strong>denied by
+    default</strong>. Grant it per run with a flag:</p>
+    <table>
+      <tr><th>Flag</th><th>Grants</th></tr>
+      <tr><td><code>--allow-fs</code></td><td>the <code>fs</code> module (read/write files)</td></tr>
+      <tr><td><code>--allow-proc</code></td><td>the <code>proc</code> module (run processes, read env)</td></tr>
+      <tr><td><code>--allow-net</code></td><td>the <code>http</code> module (network requests)</td></tr>
+      <tr><td><code>--allow-all</code></td><td>all of the above</td></tr>
+      <tr><td><code>--allow-unsafe</code></td><td>permit low-level escape hatches in trusted code</td></tr>
+    </table>
+<pre><code data-nohl>$ j --allow-fs report.j        # may read/write files
+$ j --allow-all pipeline.j     # full access</code></pre>
+
+    <h2>Environment variables</h2>
+    <table>
+      <tr><th>Variable</th><th>Effect</th></tr>
+      <tr><td><code>J_FORCE_NATIVE=1</code></td><td>Skip the interpreter and compile natively (same engine as <code>j build</code>).</td></tr>
+      <tr><td><code>J_NO_NATIVE=1</code></td><td>Use the dynamic path instead of native lowering. Mainly for testing.</td></tr>
+      <tr><td><code>J_PARALLEL=0</code></td><td>Compile natively but without auto-parallelism (single-threaded).</td></tr>
+      <tr><td><code>J_NO_NESTED=1</code></td><td>Disable the nested-loop parallel matchers (matvec / conv1d). A safety kill-switch.</td></tr>
+      <tr><td><code>J_DEBUG=1</code></td><td>On a native build failure, show the raw compiler diagnostics (normally hidden behind a J-level message).</td></tr>
+    </table>
+
+    <div class="note">
+      <p>If a program fails to compile natively, J prints a short message and points you to
+      <code>J_DEBUG=1</code> (for details) or <code>J_NO_NATIVE=1</code> / <code>j run</code>
+      (to use the interpreter instead).</p>
+    </div>
+
+    <footer>J documentation.</footer>
+  </div></main>
+</div>
+<script src="site.js"></script>
+</body>
+</html>
