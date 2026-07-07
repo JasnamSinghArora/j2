@@ -61,3 +61,10 @@ You get syntax highlighting for `.j` files, a ▶ Run button (`Cmd+Shift+R`), an
 | `j file.j` | Run instantly (interpreter) |
 | `j build file.j -o out` | Compile to a native, auto-parallelized binary |
 | `j --version` / `j --help` | The usual |
+
+## License
+
+Dual-licensed under either the [MIT license](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option. The release bundle
+also redistributes open-source components — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
