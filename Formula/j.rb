@@ -7,7 +7,7 @@ class J < Formula
   homepage "https://github.com/JasnamSinghArora/j"
   version "0.1.0"
   url "https://github.com/JasnamSinghArora/j/releases/download/v#{version}/j-#{version}-aarch64-apple-darwin.tar.gz"
-  sha256 "357938b10f114bea920eea0aaeb044b64c7c83a5a96b2e5114509282a419e86f"
+  sha256 "ff6c7e38f1c4a224f91531003adc29fe26f07542f75d991dac781ecab798d6e4"
   license any_of: ["MIT", "Apache-2.0"]
 
   def install
