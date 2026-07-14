@@ -5,9 +5,9 @@
 class J < Formula
   desc "The J programming language (native + auto-parallel, interpreter-first)"
   homepage "https://github.com/JasnamSinghArora/j"
-  version "0.1.1"
+  version "0.1.0"
   url "https://github.com/JasnamSinghArora/j/releases/download/v#{version}/j-#{version}-aarch64-apple-darwin.tar.gz"
-  sha256 "029e31a0806c9072cc5b9ba6974734ff19f00be542606a5a59ce90917d0bf973"
+  sha256 "357938b10f114bea920eea0aaeb044b64c7c83a5a96b2e5114509282a419e86f"
   license any_of: ["MIT", "Apache-2.0"]
 
   def install
