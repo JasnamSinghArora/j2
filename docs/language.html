@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Language Guide — J</title>
+  <title>Language Guide — J2</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="layout">
   <aside class="sidebar">
-    <p class="brand"><a href="index.html">J</a></p>
+    <p class="brand"><a href="index.html">J2</a></p>
     <p class="tagline">Instant to run, native-fast when it counts.</p>
     <nav>
       <h3>Guide</h3>
@@ -29,7 +29,7 @@
 
   <main class="content"><div class="inner">
     <h1>Language Guide</h1>
-    <p class="lead">The complete J language: values, bindings, control flow, functions,
+    <p class="lead">The complete J2 language: values, bindings, control flow, functions,
     data structures, classes, and error handling.</p>
 
     <h2>Comments</h2>
@@ -38,7 +38,7 @@
 x = 1   # so is this</code></pre>
 
     <h2>Values and types</h2>
-    <p>J has a small set of built-in value types:</p>
+    <p>J2 has a small set of built-in value types:</p>
     <table>
       <tr><th>Type</th><th>Example</th><th>Notes</th></tr>
       <tr><td><code>int</code></td><td><code>42</code>, <code>-7</code></td><td>64-bit signed integer</td></tr>
@@ -235,16 +235,16 @@ print(p.x)                  # 3</code></pre>
     <p>Split a program across files with <code>import</code>. The imported file's source is
     inlined at that point; imports are resolved transitively and cycles are broken (importing
     the same file twice is a no-op).</p>
-<pre><code>import "util.j"        # next to this file, or in ./lib/, or on J_PATH
-import "/abs/path.j"   # absolute path</code></pre>
+<pre><code>import "util.j2"        # next to this file, or in ./lib/, or on J_PATH
+import "/abs/path.j2"   # absolute path</code></pre>
     <p>A non-absolute import is searched for, in order: next to the importing file, then in
     that file's <code>lib/</code> directory, then in each colon-separated entry of the
     <code>J_PATH</code> environment variable. That's the whole module system — a convention,
-    not a package manager: a "package" is just a directory of <code>.j</code> files on the
+    not a package manager: a "package" is just a directory of <code>.j2</code> files on the
     search path. A typical project keeps its own modules under <code>lib/</code> and imports
     them by name.</p>
 
-    <footer>J documentation.</footer>
+    <footer>J2 documentation.</footer>
   </div></main>
 </div>
 <script src="site.js"></script>
