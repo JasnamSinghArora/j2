@@ -1,9 +1,9 @@
-// Progressive enhancement for the J docs: syntax highlighting, heading
+// Progressive enhancement for the J2 docs: syntax highlighting, heading
 // anchors, and active-nav marking. The page works fine without it.
 (function () {
   "use strict";
 
-  // ---- J syntax highlighting ----
+  // ---- J2 syntax highlighting ----
   var KW = new Set(["func","if","else","for","in","repeat","loop","do","give",
     "stop","skip","try","assert","class","global","extends","import","and","or","not"]);
   var LIT = new Set(["true","false","null","self"]);
