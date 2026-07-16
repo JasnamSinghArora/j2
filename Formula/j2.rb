@@ -7,7 +7,7 @@ class J2 < Formula
   homepage "https://github.com/JasnamSinghArora/j2"
   version "0.1.0"
   url "https://github.com/JasnamSinghArora/j2/releases/download/v#{version}/j2-#{version}-aarch64-apple-darwin.tar.gz"
-  sha256 "ff6c7e38f1c4a224f91531003adc29fe26f07542f75d991dac781ecab798d6e4"
+  sha256 "6fda8338791730cf7937362acd03e29247719e65785458e62988e1789c842e75"
   license any_of: ["MIT", "Apache-2.0"]
 
   def install
