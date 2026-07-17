@@ -42,7 +42,7 @@ Native builds (`j2 build`) link with the system linker — if you don't have the
 
 ## Documentation
 
-**[jasnamsinghArora.github.io/j](https://jasnamsingharora.github.io/j/)** — getting started, the language guide, the standard library (18 modules), the CLI, and how the automatic parallelism works.
+**[j2-lang.org](https://j2-lang.org)** — getting started, the language guide, the standard library (18 modules), the CLI, and how the automatic parallelism works.
 
 ## VS Code extension
 
