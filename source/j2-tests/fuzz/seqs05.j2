@@ -1,0 +1,12 @@
+# build seq by index, reduce via sum/manual/max/min
+N = 10
+squares := make_seq(N, 0)
+for i in 0..(N - 1) {
+    squares[i] = i * i
+}
+manual := 0
+for v in squares {
+    manual += v
+}
+print(fmt("builtin_sum={} manual_sum={}", sum(squares), manual))
+print(fmt("max={} min={} len={}", max(squares), min(squares), len(squares)))

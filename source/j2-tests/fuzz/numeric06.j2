@@ -1,0 +1,27 @@
+# Bitwise ops on integers
+b_and = 12 & 10      # 8
+b_or  = 12 | 10      # 14
+b_xor = 12 ^ 10      # 6
+b_shl = 1 << 4       # 16
+b_not0 = ~0          # -1
+b_not5 = ~5          # -6
+print(fmt("and={} or={} xor={} shl={}", b_and, b_or, b_xor, b_shl))
+print(fmt("not0={} not5={}", b_not0, b_not5))
+
+# Precedence chain: 3&1=1, 2^1=3, 1|3=3
+prec = 1 | 2 ^ 3 & 1
+print(fmt("prec={}", prec))
+
+# shift accumulation yields powers of two
+acc := 0
+for k in 0..5 {
+    acc = acc | (1 << k)
+}
+print(fmt("mask={}", acc))   # bits 0..5 set -> 63
+
+# integral float coerces to int for bitwise
+mixed = 6.0 & 3              # 2
+print(fmt("mixed={}", mixed))
+print(b_and == 8)
+print(prec == 3)
+print(acc == 63)

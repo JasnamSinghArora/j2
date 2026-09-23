@@ -1,0 +1,20 @@
+# Build N plates, count "AMB-" prefix
+
+N = 5000
+plates := make_seq(N, "")
+for i in 0..(N - 1) {
+    if i % 50 == 0 {
+        plates[i] = "AMB-" + str(i)
+    } else {
+        plates[i] = "CAR-" + str(i)
+    }
+}
+
+t = time.now()
+func is_amb(p) = slice(p, 0, 4) == "AMB-"
+n := 0
+for p in plates if is_amb {
+    n++
+}
+ms = time.elapsed_ms(t)
+print(fmt("TRAFFIC_STRESS N={} count={} ms={}", N, n, ms))

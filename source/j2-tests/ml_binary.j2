@@ -1,0 +1,31 @@
+# binary apply, elementwise max and min
+
+N = 20000
+a := make_seq(N, 0)
+b := make_seq(N, 0)
+for i in 0..(N - 1) {
+    a[i] = (i * 3) % 100
+    b[i] = (i * 7) % 100
+}
+
+t = time.now()
+dst_max := make_seq(N, 0)
+dst_min := make_seq(N, 0)
+for i in 0..(N - 1) {
+    av := a[i]
+    bv := b[i]
+    if av > bv {
+        dst_max[i] = av
+        dst_min[i] = bv
+    } else {
+        dst_max[i] = bv
+        dst_min[i] = av
+    }
+}
+ms = time.elapsed_ms(t)
+
+sum_max := 0
+sum_min := 0
+for v in dst_max { sum_max += v }
+for v in dst_min { sum_min += v }
+print(fmt("ML_BINARY N={} ms={} sum_max={} sum_min={}", N, ms, sum_max, sum_min))

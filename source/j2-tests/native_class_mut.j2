@@ -1,0 +1,27 @@
+# Typed class WITH a mutating method
+
+Point = class {
+    x: float
+    y: float
+    dist() -> float = sqrt(x * x + y * y)
+    move(dx: float, dy: float) := {
+        x = x + dx
+        y = y + dy
+    }
+}
+
+func mk(a: float, b: float) -> Point = Point(x: a, y: b)
+func dist_of(p: Point) -> float = p.dist()
+
+p = mk(3.0, 4.0)
+assert dist_of(p) == 5.0, "dist should be 5"
+
+# Dynamic dispatch on the shared instance.
+p.move(1.0, 1.0)
+assert p.x == 4.0, "x should be 4 after move"
+assert p.y == 5.0, "y should be 5 after move"
+
+# native fn re-reads mutated instance across boundary
+assert dist_of(p) == sqrt(41.0), "dist after move should be sqrt(41)"
+
+print("NATIVE_CLASS_MUT PASS")

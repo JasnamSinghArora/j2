@@ -1,0 +1,12 @@
+# repeat loop with accumulator, stop and skip
+i := 0
+sumOdd := 0
+seen := 0
+repeat i < 20 {
+    i++
+    skip if i % 2 == 0      # skip even values
+    stop if i > 11          # break once past 11
+    sumOdd += i             # 1+3+5+7+9+11 = 36
+    seen++
+}
+print(fmt("i={} sumOdd={} seen={}", i, sumOdd, seen))

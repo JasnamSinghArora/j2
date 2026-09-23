@@ -1,0 +1,26 @@
+# select/blend, dst[i] = cond[i] ? a[i]:b[i]
+
+N = 20000
+a := make_seq(N, 1.0)
+b := make_seq(N, 2.0)
+cond := make_seq(N, false)
+for i in 0..(N - 1) {
+    cond[i] = i % 2 == 0
+}
+
+t = time.now()
+dst := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    if cond[i] {
+        dst[i] = a[i]
+    } else {
+        dst[i] = b[i]
+    }
+}
+ms = time.elapsed_ms(t)
+
+s := 0.0
+for v in dst { s += v }
+# half 1.0 plus half 2.0 = N*1.5
+expected = N * 1.5
+print(fmt("ML_SELECT N={} ms={} sum={} expected={}", N, ms, s, expected))

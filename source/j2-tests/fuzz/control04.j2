@@ -1,0 +1,37 @@
+# give must escape all enclosing loops
+func find_pair(target) = {
+    for a in 1..10 {
+        for b in 1..10 {
+            if a * b == target {
+                give fmt("{}x{}", a, b)
+            }
+        }
+    }
+    give "none"
+}
+
+# first (a,b) row-major with product == target
+assert find_pair(12) == "2x6", "first product 12"
+assert find_pair(7) == "1x7", "first product 7"
+assert find_pair(100) == "10x10", "max product"
+assert find_pair(101) == "none", "no product found falls through"
+
+# give from repeat nested in for
+func first_over(limit) = {
+    for base in 1..5 {
+        acc := 0
+        n := 1
+        repeat n <= 10 {
+            acc += base
+            if acc > limit {
+                give fmt("base={} n={} acc={}", base, n, acc)
+            }
+            n++
+        }
+    }
+    give "exhausted"
+}
+assert first_over(7) == "base=1 n=8 acc=8", "give from repeat-in-for"
+
+print(fmt("control04 {} {} {}", find_pair(12), find_pair(101), first_over(7)))
+print("control04 PASS")

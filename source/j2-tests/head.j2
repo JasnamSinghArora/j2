@@ -1,0 +1,10 @@
+# head - print first N lines
+args = proc.argv()
+if count(args) < 3 {
+    print("usage: head N FILE")
+} else {
+    n = num(args[1])
+    path = args[2]
+    lines = fs.read_lines(path)
+    for l in take(lines, n) { print(l) }
+}

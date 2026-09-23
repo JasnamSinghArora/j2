@@ -1,0 +1,21 @@
+# function forms, single/multi-input, block, recursion
+
+func dble(x) = x * 2
+print(dble(5))
+
+func add(x, y) = x + y
+print(add(3, 4))
+
+func factorial(n) = {
+    result := 1
+    for i in 1..n {
+        result *= i
+    }
+    result
+}
+print(factorial(6))
+
+# Recursion with pattern match on specific value.
+func fact(0) = 1
+func fact(n) = n * fact(n - 1)
+print(fact(5))

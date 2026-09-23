@@ -1,0 +1,7 @@
+# pure reduction; expr funcs pure by construction
+
+func sq(x) = x * x
+data = collect(1..100000)
+mapped = data >> sq
+total = sum(mapped)
+print(fmt("PURITY_SAFE total={}", total))

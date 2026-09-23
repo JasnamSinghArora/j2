@@ -1,0 +1,31 @@
+# dynamic sum vs `native {}` sum benchmark
+
+N = 1000000
+data := make_seq(N, 0.0)
+for i in 0..(N - 1) { data[i] = i * 1.0 }
+
+# Untyped path: J2Value dispatch on every iteration.
+t0 = time.now()
+total_dyn := 0.0
+for x in data { total_dyn += x }
+ms_dyn = time.elapsed_ms(t0)
+
+# native path, one Vec<f64> conversion then iter().sum()
+t1 = time.now()
+total_native = native {
+    let data_v: J2Value = __get(env, "data")?;
+    let v: Vec<f64> = match &data_v {
+        J2Value::Seq(s) => s.lock().unwrap().items.iter()
+            .map(|x| x.as_num_f64().unwrap_or(0.0))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let s: f64 = v.iter().sum();
+    J2Value::Float(s)
+}
+ms_native = time.elapsed_ms(t1)
+
+print(fmt("NATIVE_BENCH N={}", N))
+print(fmt("  untyped J2  ms={} total={}", ms_dyn, total_dyn))
+print(fmt("  native block ms={} total={}", ms_native, total_native))
+print(fmt("  speedup    {}x", ms_dyn / ms_native))

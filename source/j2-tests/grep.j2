@@ -1,0 +1,12 @@
+# grep, print lines matching a regex
+args = proc.argv()
+if count(args) < 3 {
+    print("usage: grep PATTERN FILE")
+} else {
+    pat = args[1]
+    path = args[2]
+    lines = fs.read_lines(path)
+    for l in lines {
+        if regex.match(pat, l) { print(l) }
+    }
+}

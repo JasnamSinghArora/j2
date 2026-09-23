@@ -1,0 +1,35 @@
+# realistic CLI pipeline (JSON, fs, sha256, assert)
+
+data = [
+    {name: "Alpha", value: 10},
+    {name: "Bravo", value: 25},
+    {name: "Charlie", value: 30},
+    {name: "Delta", value: 17}
+]
+
+# 2 + 3: stringify + write
+js = json.stringify_pretty(data)
+tmp = "/tmp/j2_general_smoke.json"
+fs.write_file(tmp, js)
+
+# 4: read + parse
+text2 = fs.read_file(tmp)
+items = json.parse(text2)
+
+# 5: extract values + sum
+values = map(items, func(it) = it.value)
+total = sum(values)
+
+# 6: hash
+digest = hash.sha256(text2)
+
+# 7: verify
+assert total == 82, "expected total=82"
+assert len(digest) == 64, "sha256 hex digest should be 64 chars"
+assert count(items) == 4, "expected 4 items"
+
+# 8: cleanup
+fs.remove(tmp)
+
+print(fmt("GENERAL_SMOKE total={} sha256={} items={} (PASS)",
+    total, slice(digest, 0, 16), count(items)))

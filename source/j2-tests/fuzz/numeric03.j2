@@ -1,0 +1,15 @@
+# Exponent / power uses **
+p1 = 2 ** 10       # 1024 (Int)
+p2 = 3 ** 0        # 1
+p3 = 2 ** (-1)     # 0.5 (negative exp -> Float)
+p4 = 2.0 ** 3      # 8 (float base; prints as 8)
+p5 = (-2) ** 3     # -8
+p6 = (-3) ** 2     # 9
+p7 = 5 ** 3 % 7  # ** binds tighter than % (= 6)
+p8 = 2 ** 2 ** 3   # right-assoc -> 2 ** 8 = 256
+print(fmt("p1={} p2={} p3={} p4={}", p1, p2, p3, p4))
+print(fmt("p5={} p6={} p7={} p8={}", p5, p6, p7, p8))
+print(p1 == 1024)
+print(p3 == 0.5)
+print(p5 == -8)
+print(p8 == 256)

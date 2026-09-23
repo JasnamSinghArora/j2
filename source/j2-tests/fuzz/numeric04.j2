@@ -1,0 +1,40 @@
+# running sums, repeat, recursive factorial, early give
+
+# Closed-form check: sum(1..n) = n*(n+1)/2.
+n = 2000
+acc := 0
+for k in 1..n {
+    acc += k
+}
+expected = n * (n + 1) / 2
+print(fmt("acc={} expected={} match={}", acc, expected, acc == expected))
+
+# repeat (while) loop: double until exceeding 1000.
+v := 1
+steps := 0
+repeat v <= 1000 {
+    v *= 2
+    steps++
+}
+print(fmt("v={} steps={}", v, steps))    # 1024, 10
+
+# Recursive factorial with a base case.
+func fact(m) = {
+    if m <= 1 { give 1 }
+    give m * fact(m - 1)
+}
+print(fmt("fact5={} fact0={}", fact(5), fact(0)))   # 120, 1
+
+# Early give out of a loop
+func firstSquareOver(limit) = {
+    for k in 1..100 {
+        if k * k > limit {
+            give k
+        }
+    }
+    give -1
+}
+print(fmt("firstSquareOver50={}", firstSquareOver(50)))   # 8 (64>50)
+print(acc == 2001000)
+print(v == 1024)
+print(fact(5) == 120)

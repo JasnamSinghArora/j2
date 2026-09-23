@@ -1,0 +1,10 @@
+# seq literals, indexing, len, element access
+s = [10, 20, 30, 40, 50]
+print(fmt("len={}", len(s)))
+print(fmt("first={} last={}", s[0], s[len(s) - 1]))
+print(fmt("mid={}", s[2]))
+total := 0
+for i in 0..(len(s) - 1) {
+    total += s[i]
+}
+print(fmt("indexed_sum={} builtin_sum={}", total, sum(s)))

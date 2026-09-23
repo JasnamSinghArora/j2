@@ -1,0 +1,12 @@
+[package]
+name = "j2_compiler"
+version = "0.0.0"
+edition = "2021"
+description = "The J2 programming language frontend: lexer, parser, AST, lowering to native source."
+
+[lib]
+name = "j2_compiler"
+path = "src/lib.rs"
+
+# standalone crate, not in compiler workspace
+[workspace]

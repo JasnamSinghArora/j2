@@ -1,0 +1,20 @@
+# error_classes - typed try/catch demonstration
+
+try { x = 10 / 0 }
+else ZeroDivisionError { print("caught: division by zero") }
+else { print("other") }
+
+try { n = num("not_a_number") }
+else ConversionError { print("caught: bad text-to-number conversion") }
+else { print("other") }
+
+try { v = num("hello") + 1 }
+else ConversionError { print("caught: chained conversion error") }
+else ArithmeticError { print("caught: arithmetic") }
+else { print("other") }
+
+# Catch via parent class
+try { y = 1 / 0 }
+else Error { print("caught via parent class Error") }
+
+print("done")

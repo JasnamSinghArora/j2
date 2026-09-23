@@ -1,0 +1,11 @@
+# division and negative remainder semantics via recursion
+
+func collatz_steps(n) = {
+    if n == 1 { give 0 }
+    if n % 2 == 0 { give 1 + collatz_steps(n / 2) }
+    give 1 + collatz_steps(3 * n + 1)
+}
+
+print(fmt("int 7/2={} 7%2={} -7/2={} -7%2={} 7%-2={}", 7 / 2, 7 % 2, -7 / 2, -7 % 2, 7 % -2))
+print(fmt("float 7.0/2.0={} 1.0/4.0={} 10.0/3.0={}", 7.0 / 2.0, 1.0 / 4.0, 10.0 / 3.0))
+print(fmt("collatz1={} collatz6={} collatz27={}", collatz_steps(1), collatz_steps(6), collatz_steps(27)))

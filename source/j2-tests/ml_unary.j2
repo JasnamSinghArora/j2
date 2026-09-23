@@ -1,0 +1,20 @@
+# unary apply, abs and sqrt
+
+N = 50000
+src := make_seq(N, 0.0)
+for i in 0..(N - 1) { src[i] = (i % 100) - 50.0 }
+
+t = time.now()
+dst_abs := make_seq(N, 0.0)
+dst_sqrt := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    dst_abs[i] = abs(src[i])
+    dst_sqrt[i] = sqrt(abs(src[i]))
+}
+ms = time.elapsed_ms(t)
+
+sum_abs := 0.0
+for v in dst_abs { sum_abs += v }
+sum_sqrt := 0.0
+for v in dst_sqrt { sum_sqrt += v }
+print(fmt("ML_UNARY N={} ms={} sum_abs={} sum_sqrt={}", N, ms, sum_abs, sum_sqrt))

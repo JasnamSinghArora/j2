@@ -1,0 +1,6 @@
+# parallel sum; auto-dispatches above PAR_THRESHOLD = 32_768
+
+# collect() materializes the flow; 1..N is finite
+big = collect(1..2000000)
+total = sum(big)
+print(total)

@@ -1,0 +1,11 @@
+func k_axpy(y: seq<float>, x: seq<float>, a: float) -> nil = { for i in 0..(len(y)-1) { y[i] = y[i] + a*x[i] } }
+func k_scale(y: seq<float>, a: float) -> nil = { for i in 0..(len(y)-1) { y[i] = y[i] * a } }
+func k_zipadd(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = a[i] + b[i] } }
+func k_zipsub(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = a[i] - b[i] } }
+func k_unary(d: seq<float>, s: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = sqrt(s[i]) } }
+func k_multiaxpy(d: seq<float>, x: seq<float>, z: seq<float>, a: float, b: float) -> nil = { for i in 0..(len(d)-1) { d[i] = a*x[i] + b*z[i] } }
+func k_fma(d: seq<float>, a: seq<float>, b: seq<float>, c: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = a[i]*b[i] + c[i] } }
+func k_absdiff(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = abs(a[i] - b[i]) } }
+func k_max(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = max(a[i], b[i]) } }
+func k_clamp(d: seq<float>, a: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = clamp(a[i], 0.0, 1.0) } }
+func k_sqadd(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = { for i in 0..(len(d)-1) { d[i] = d[i] + (a[i] - b[i]) * (a[i] - b[i]) } }

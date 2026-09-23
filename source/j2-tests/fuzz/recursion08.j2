@@ -1,0 +1,36 @@
+# Base-case edge conditions plus a repeat
+
+func fib_rec(n) = {
+    if n < 2 { give n }
+    give fib_rec(n - 1) + fib_rec(n - 2)
+}
+
+func fib_iter(n) = {
+    if n < 2 { give n }
+    a := 0
+    b := 1
+    i := 2
+    repeat i <= n {
+        c := a + b
+        a = b
+        b = c
+        i++
+    }
+    give b
+}
+
+func sum_even_until(limit) = {
+    total := 0
+    k := 0
+    repeat true {
+        k++
+        stop if k > limit
+        skip if k % 2 == 1
+        total += k
+    }
+    give total
+}
+
+print(fmt("rec0={} iter0={} rec10={} iter10={} rec20={} iter20={}", fib_rec(0), fib_iter(0), fib_rec(10), fib_iter(10), fib_rec(20), fib_iter(20)))
+print(fmt("match10={} match20={}", fib_rec(10) == fib_iter(10), fib_rec(20) == fib_iter(20)))
+print(fmt("sum_even_until1={} until2={} until10={}", sum_even_until(1), sum_even_until(2), sum_even_until(10)))

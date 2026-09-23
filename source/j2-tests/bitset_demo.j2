@@ -1,0 +1,14 @@
+# bitset_demo - bitwise ops + popcount
+flags := 0
+# set bits 0, 2, 5
+flags = flags | (1 << 0)
+flags = flags | (1 << 2)
+flags = flags | (1 << 5)
+
+print(fmt("flags={} (popcount={})", flags, bits.popcount(flags)))
+# clear bit 2
+flags = flags & ~(1 << 2)
+print(fmt("after clear bit 2: flags={} (popcount={})", flags, bits.popcount(flags)))
+# XOR-toggle bit 0
+flags = flags ^ (1 << 0)
+print(fmt("after toggle bit 0: flags={}", flags))

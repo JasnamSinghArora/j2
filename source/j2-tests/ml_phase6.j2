@@ -1,0 +1,26 @@
+# Phase 6 mix: abs-diff and FMA-write.
+
+N = 20000
+a := make_seq(N, 0.0)
+b := make_seq(N, 0.0)
+c := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    a[i] = i * 1.0
+    b[i] = (N - i) * 1.0
+    c[i] = (i % 13) * 1.0
+}
+
+t = time.now()
+dst1 := make_seq(N, 0.0)
+dst2 := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    dst1[i] = abs(a[i] - b[i])
+    dst2[i] = a[i] * b[i] + c[i]
+}
+ms = time.elapsed_ms(t)
+
+s1 := 0.0
+s2 := 0.0
+for v in dst1 { s1 += v }
+for v in dst2 { s2 += v }
+print(fmt("ML_PHASE6 N={} ms={} abs_diff_sum={} fma_sum={}", N, ms, s1, s2))

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "J",
+  "scopeName": "source.j2",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#funcdef" },
+    { "include": "#classdef" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#call" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.number-sign.j2",
+      "match": "#.*$"
+    },
+    "strings": {
+      "name": "string.quoted.double.j2",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.j2", "match": "\\\\." }
+      ]
+    },
+    "funcdef": {
+      "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.function.j2" },
+        "2": { "name": "entity.name.function.j2" }
+      }
+    },
+    "classdef": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(class)\\b",
+      "captures": {
+        "1": { "name": "entity.name.type.class.j2" },
+        "2": { "name": "keyword.operator.j2" },
+        "3": { "name": "storage.type.class.j2" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.j2", "match": "\\b(if|else|for|in|repeat|loop|do|give|stop|skip|try|assert)\\b" },
+        { "name": "storage.type.j2", "match": "\\b(func|class|global|extends|import)\\b" },
+        { "name": "keyword.operator.word.j2", "match": "\\b(and|or|not)\\b" }
+      ]
+    },
+    "constants": {
+      "name": "constant.language.j2",
+      "match": "\\b(true|false|null|self)\\b"
+    },
+    "types": {
+      "name": "support.type.j2",
+      "match": "\\b(int|float|text|bool|seq|map|func)\\b(?=\\s*[>\\),=}])"
+    },
+    "numbers": {
+      "name": "constant.numeric.j2",
+      "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][-+]?[0-9]+)?\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.j2",
+      "match": ":=|\\.\\.|>>|->|[-+*/%^<>=!&|]=?|::"
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "name": "entity.name.function.call.j2"
+    }
+  }
+}

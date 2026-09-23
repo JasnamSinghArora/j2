@@ -1,0 +1,27 @@
+# Estimate pi by Monte Carlo
+func count_hits(seed: int, n: int) -> int = {
+    state := seed
+    hits := 0
+    for i in 0..(n - 1) {
+        state = (state * 1103515245 + 12345) % 2147483648
+        x := (state * 1.0) / 2147483648.0
+        state = (state * 1103515245 + 12345) % 2147483648
+        y := (state * 1.0) / 2147483648.0
+        d := x * x + y * y
+        if d <= 1.0 { hits = hits + 1 }
+    }
+    give hits
+}
+func estimate(n: int) -> float = {
+    a := count_hits(1, n)
+    b := count_hits(999983, n)
+    c := count_hits(50000017, n)
+    e := count_hits(1234567891, n)
+    total := a + b + c + e
+    give (total * 4.0) / (4.0 * (n * 1.0))
+}
+n = 20000000
+t = time.now()
+pi = estimate(n)
+ms = time.elapsed_ms(t)
+print(fmt("pi ~ {}  ({} samples, {} ms)", pi, 4 * n, ms))

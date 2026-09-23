@@ -1,0 +1,28 @@
+# parallel CLAMP and ZIP-DIFF-SQ-ADD must match serial
+
+func clamp01(d: seq<float>, a: seq<float>) -> nil = {
+    for i in 0..(len(d)-1) { d[i] = clamp(a[i], 0.0, 1.0) }
+}
+func accum_sqdiff(d: seq<float>, a: seq<float>, b: seq<float>) -> nil = {
+    for i in 0..(len(d)-1) { d[i] = d[i] + (a[i] - b[i]) * (a[i] - b[i]) }
+}
+
+# CLAMP maps [-1,0.5,2,0] to [0,0.5,1,0]
+a = [0.0 - 1.0, 0.5, 2.0, 0.0]
+c = make_seq(4, 0.0)
+clamp01(c, a)
+assert c[0] == 0.0, "clamp neg"
+assert c[1] == 0.5, "clamp mid"
+assert c[2] == 1.0, "clamp over"
+assert c[3] == 0.0, "clamp zero"
+
+# DIFF-SQ-ADD, d += (a-b)^2 gives [14,29,46]
+d = [10.0, 20.0, 30.0]
+pa = [3.0, 5.0, 7.0]
+pb = [1.0, 2.0, 3.0]
+accum_sqdiff(d, pa, pb)
+assert d[0] == 14.0, "sqdiff 0"
+assert d[1] == 29.0, "sqdiff 1"
+assert d[2] == 46.0, "sqdiff 2"
+
+print("PAR_CLAMP_SQADD PASS")

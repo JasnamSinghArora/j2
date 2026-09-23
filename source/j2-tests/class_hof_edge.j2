@@ -1,0 +1,64 @@
+# edge cases from adversarial class/HOF review
+
+# F1: seq field getter clones, no move-out
+Bag = class {
+    data: seq<float>
+    grab() -> seq<float> = data
+}
+func grab_of(b: Bag) -> seq<float> = b.grab()
+b = Bag(data: [1.0, 2.0, 3.0])
+g = grab_of(b)
+assert len(g) == 3, "F1 grab len"
+assert g[0] == 1.0, "F1 grab[0]"
+
+# F4: native, dynamic, named construction agree
+P2 = class { x: float  y: float }
+func mkp(a: float, c: float) -> P2 = P2(a, c)     # native positional
+pa = mkp(3.0, 4.0)
+pb = P2(5.0, 6.0)                                  # dynamic positional
+pc = P2(x: 7.0, y: 8.0)                            # named
+assert pa.x == 3.0, "F4 native pos x"
+assert pa.y == 4.0, "F4 native pos y"
+assert pb.x == 5.0, "F4 dyn pos x"
+assert pb.y == 6.0, "F4 dyn pos y"
+assert pc.x == 7.0, "F4 named x"
+
+# F5: instance aliasing preserved via shared Arc
+Q = class {
+    v: float
+    bump(d: float) := { v = v + d }
+}
+func get(q: Q) -> Q = q
+q1 = Q(v: 1.0)
+q2 = get(q1)
+q1.bump(10.0)
+assert q2.v == 11.0, "F5 aliasing preserved"
+
+# HOF: closure captures enclosing local
+func make_adder(base: int) = func(x) = x + base
+add5 = make_adder(5)
+add10 = make_adder(10)
+assert add5(3) == 8, "closure add5"
+assert add10(3) == 13, "closure add10 independent"
+
+# re-review #1: dropped-class param must go dynamic
+Bdrop = class {
+    x: int
+    show() = print(x)
+}
+Aown = class {
+    v: int
+    combine(b: Bdrop) -> int = v + 1
+}
+ao = Aown(v: 3)
+assert ao.combine(Bdrop(x: 7)) == 4, "dropped-class method param bails cleanly"
+
+# re-review #3: class-literal lambda captures at definition
+base_v := 5
+mk_cls = func() = class { val = base_v }
+base_v = 99
+made = mk_cls()
+inst = made()
+assert inst.val == 5, "lexical capture through class literal"
+
+print("CLASS_HOF_EDGE PASS")

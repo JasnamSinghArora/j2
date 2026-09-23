@@ -1,0 +1,52 @@
+# broadcast-add, axis-reduce-sum, transpose on flat M*N matrix
+
+M = 60
+N = 80
+
+a := []
+for i in 0..(M * N) {
+    a += [(i % 7) * 1.0]
+}
+bias := []
+for j in 0..(N - 1) {
+    bias += [j * 0.5]
+}
+
+t = time.now()
+
+# broadcast-add: a[i*N+j] += bias[j]
+a_bc := []
+for i in 0..(M - 1) {
+    for j in 0..(N - 1) {
+        a_bc += [a[i * N + j] + bias[j]]
+    }
+}
+
+# axis-reduce-sum: out[i] = sum_j a[i*N+j]
+out := []
+for i in 0..(M - 1) {
+    row_sum := 0.0
+    for j in 0..(N - 1) {
+        row_sum += a[i * N + j]
+    }
+    out += [row_sum]
+}
+
+# transpose: t[j*M+i] = a[i*N+j]
+trans := []
+for j in 0..(N - 1) {
+    for i in 0..(M - 1) {
+        trans += [a[i * N + j]]
+    }
+}
+
+ms = time.elapsed_ms(t)
+
+cs_bc := 0.0
+for v in a_bc { cs_bc += v }
+cs_out := 0.0
+for v in out { cs_out += v }
+cs_t := 0.0
+for v in trans { cs_t += v }
+print(fmt("ML_MULTIDIM M={} N={} ms={} bc={} reduce={} trans={}",
+    M, N, ms, cs_bc, cs_out, cs_t))

@@ -1,0 +1,10 @@
+func fill(y: seq<float>, v: float) -> nil = { for i in 0..(len(y)-1) { y[i] = v } }
+func saxpy(y: seq<float>, x: seq<float>, a: float) -> nil = { for i in 0..(len(y)-1) { y[i] = y[i] + a * x[i] } }
+func checksum(y: seq<float>) -> float = { s := 0.0  for i in 0..(len(y)-1) { s = s + y[i] }  give s }
+n = 8000000
+y := make_seq(n, 0.0)
+x := make_seq(n, 0.0)
+fill(y, 1.0)
+fill(x, 2.0)
+for r in 0..49 { saxpy(y, x, 0.5) }
+print(fmt("checksum={}", checksum(y)))

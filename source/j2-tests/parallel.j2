@@ -1,0 +1,8 @@
+# 2M-element sum through 8-worker chunked reduce
+
+N = 2000000
+big = collect(1..N)
+t = time.now()
+s = sum(big)
+ms = time.elapsed_ms(t)
+print(fmt("PARALLEL N={} sum={} ms={}", N, s, ms))

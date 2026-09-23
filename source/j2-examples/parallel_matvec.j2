@@ -1,0 +1,18 @@
+# auto-parallel matvec; memory-bound, speedup ~2x
+M = 3000
+N = 3000
+a := make_seq(M * N, 0.0)
+for i in 0..(M * N - 1) { a[i] = (i % 7) * 1.0 }
+x := make_seq(N, 0.0)
+for j in 0..(N - 1) { x[j] = (j % 5) * 1.0 }
+t = time.now()
+y := make_seq(M, 0.0)
+for i in 0..(M - 1) {
+    acc := 0.0
+    for j in 0..(N - 1) { acc += a[i * N + j] * x[j] }
+    y[i] = acc
+}
+ms = time.elapsed_ms(t)
+checksum := 0.0
+for v in y { checksum += v }
+print(fmt("matvec {}x{}  {} ms  checksum={}", M, N, ms, checksum))

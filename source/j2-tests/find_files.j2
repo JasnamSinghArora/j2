@@ -1,0 +1,15 @@
+# find_files, list directory files by glob-style suffix
+args = proc.argv()
+dir := "."
+suffix := ".rs"
+if count(args) >= 2 { dir = args[1] }
+if count(args) >= 3 { suffix = args[2] }
+
+n := 0
+for name in fs.list_dir(dir) {
+    if text.ends_with(name, suffix) {
+        print(name)
+        n++
+    }
+}
+print(fmt("({} files)", n))

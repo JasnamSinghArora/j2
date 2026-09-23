@@ -1,0 +1,37 @@
+# native class validation, lowering, boundary, construction, methods
+
+Point = class {
+    x: float
+    y: float
+    dist() -> float = sqrt(x * x + y * y)
+    scaled_sq(k: float) -> float = (x * x + y * y) * k
+}
+
+func mk(a: float, b: float) -> Point = Point(x: a, y: b)
+func mk_pos(a: float, b: float) -> Point = Point(a, b)
+func dist_of(p: Point) -> float = p.dist()
+func scaled_of(p: Point, k: float) -> float = p.scaled_sq(k)
+
+func sum_dists(n: int) -> float = {
+    total := 0.0
+    for i in 1..n {
+        pt := mk(2.0, 0.0)
+        total = total + dist_of(pt)
+    }
+    give total
+}
+
+p = mk(3.0, 4.0)
+assert dist_of(p) == 5.0, "dist should be 5"
+assert p.x == 3.0, "x should be 3"
+assert p.y == 4.0, "y should be 4"
+assert scaled_of(p, 2.0) == 50.0, "scaled_sq(2) should be 50"
+
+q = mk_pos(6.0, 8.0)
+assert dist_of(q) == 10.0, "positional dist should be 10"
+
+# inclusive 1..3 gives 3 iterations, 6.0 total
+s = sum_dists(3)
+assert s == 6.0, "sum_dists(3) should be 6"
+
+print("NATIVE_CLASS PASS")

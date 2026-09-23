@@ -1,0 +1,8 @@
+# clamp below/in/above range, plus float clamp
+print(fmt("clamp {} {} {}", clamp(0 - 5, 0, 10), clamp(5, 0, 10), clamp(50, 0, 10)))
+print(fmt("clamp float {} {} {}", clamp(0.0 - 1.0, 0.0, 1.0), clamp(0.5, 0.0, 1.0), clamp(2.0, 0.0, 1.0)))
+nums = [10, 20, 30, 40]
+empty = []
+print(fmt("len {} {} {}", len(nums), len(empty), len("hello")))
+print(fmt("sum {} {}", sum(nums), sum([1.5, 2.5, 3.0])))
+print(fmt("sum range {}", sum(1..100)))

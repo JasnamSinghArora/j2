@@ -1,0 +1,21 @@
+# count_long_strings + process_each; text works uniformly
+
+words = ["apple", "banana", "cherry", "date", "fig", "grapefruit", "kiwi", "lime"]
+
+func is_long(w) = len(w) > 4
+
+# Count
+n_long := 0
+for w in words if is_long {
+    n_long++
+}
+
+# Process each - accumulate total length
+total_len := 0
+for w in words {
+    total_len += len(w)
+}
+
+print(fmt("count_long_strings N={} count={}", count(words), n_long))
+print(fmt("process_each_string N={} total_len={}", count(words), total_len))
+print("PASS")

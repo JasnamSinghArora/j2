@@ -1,0 +1,26 @@
+# Nested if / else-if / else
+func classify(n) = {
+    if n % 15 == 0 {
+        give "FizzBuzz"
+    } else if n % 3 == 0 {
+        give "Fizz"
+    } else if n % 5 == 0 {
+        give "Buzz"
+    } else {
+        give fmt("{}", n)
+    }
+}
+
+out := ""
+for i in 1..20 {
+    if i > 1 {
+        out += ","
+    }
+    out += classify(i)
+}
+print(out)
+assert classify(15) == "FizzBuzz", "15 is FizzBuzz"
+assert classify(9) == "Fizz", "9 is Fizz"
+assert classify(10) == "Buzz", "10 is Buzz"
+assert classify(7) == "7", "7 is plain"
+print("control01 PASS")

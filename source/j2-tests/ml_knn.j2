@@ -1,0 +1,36 @@
+# k-NN, K nearest train points per query
+
+N_TRAIN = 500
+N_QUERY = 5
+D = 8
+K = 3
+
+rand.seed(123)
+
+train := []
+for i in 0..(N_TRAIN * D) { train += [rand.next_float()] }
+query := []
+for i in 0..(N_QUERY * D) { query += [rand.next_float()] }
+
+t = time.now()
+checksum := 0.0
+for q in 0..(N_QUERY - 1) {
+    # Compute distance to every train point
+    dists := []
+    for ti in 0..(N_TRAIN - 1) {
+        d_sum := 0.0
+        for d in 0..(D - 1) {
+            diff = query[q * D + d] - train[ti * D + d]
+            d_sum += diff * diff
+        }
+        dists += [d_sum]
+    }
+    # naive K smallest, sort and take K
+    sorted_d = sort(dists)
+    for k in 0..(K - 1) {
+        checksum += sorted_d[k]
+    }
+}
+ms = time.elapsed_ms(t)
+print(fmt("ML_KNN N_TRAIN={} N_QUERY={} D={} K={} ms={} checksum={}",
+    N_TRAIN, N_QUERY, D, K, ms, checksum))

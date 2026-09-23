@@ -1,0 +1,9 @@
+# Mixed serial + parallel
+small = collect(1..5000)         # below threshold -> serial
+big = collect(1..2000000)        # above threshold -> parallel
+
+t = time.now()
+ss = sum(small)
+sb = sum(big)
+ms = time.elapsed_ms(t)
+print(fmt("COMBINED small={} big={} ms={}", ss, sb, ms))

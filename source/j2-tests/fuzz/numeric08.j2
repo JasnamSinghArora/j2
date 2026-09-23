@@ -1,0 +1,11 @@
+# out-of-range index errors identically on both paths
+s = [10, 20, 30]
+print(fmt("len={} first={} last={}", len(s), s[0], s[2]))   # len=3 first=10 last=30
+sumv := 0
+for i in 0..2 {
+    sumv += s[i]
+}
+print(fmt("sum={}", sumv))   # 60
+# index 3 past length-3 seq, runtime error
+bad = s[3]
+print("unreachable")

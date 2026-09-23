@@ -1,0 +1,23 @@
+# midpoint-rule integration; 4 independent calls run concurrently
+func integrate(lo: float, hi: float, steps: int) -> float = {
+    h := (hi - lo) / (steps * 1.0)
+    acc := 0.0
+    for k in 0..(steps - 1) {
+        x := lo + (k * 1.0 + 0.5) * h
+        fx := 1.0 / (1.0 + x * x) + x * x * 0.001 - x * 0.01
+        acc = acc + fx
+    }
+    give acc * h
+}
+func total(steps: int) -> float = {
+    a := integrate(0.0, 1.0, steps)
+    b := integrate(1.0, 2.0, steps)
+    c := integrate(2.0, 3.0, steps)
+    d := integrate(3.0, 4.0, steps)
+    give a + b + c + d
+}
+steps = 50000000
+t = time.now()
+r = total(steps)
+ms = time.elapsed_ms(t)
+print(fmt("integral over [0,4] ~ {}  ({} steps, {} ms)", r, 4 * steps, ms))

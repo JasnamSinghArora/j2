@@ -1,0 +1,27 @@
+# function-local accumulators, early give, fresh per call
+func firstFactorAbove(n, threshold) = {
+    d := 2
+    repeat d <= n {
+        if n % d == 0 and d > threshold {
+            give d
+        }
+        d++
+    }
+    give -1
+}
+
+func fact(n) = {
+    if n <= 1 { give 1 }
+    give n * fact(n - 1)
+}
+
+func sumTo(n) = {
+    s := 0
+    for i in 1..n {
+        s += i
+    }
+    give s
+}
+
+print(fmt("ff={} fact5={} sum10={}",
+    firstFactorAbove(30, 2), fact(5), sumTo(10)))

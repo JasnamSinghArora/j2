@@ -1,0 +1,14 @@
+[package]
+name = "j2"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "j2"
+path = "main.rs"
+
+[dependencies]
+j2_compiler = { path = "../../../compiler/j2_compiler" }
+j2_runtime = { path = "../../../library/j2_runtime" }
+
+[workspace]

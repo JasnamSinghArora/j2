@@ -1,0 +1,25 @@
+# Conv1d: y[i] = sum_k x[i+k] * w[k]
+
+N = 20000
+KS = 16
+
+x := make_seq(N, 0.0)
+for i in 0..(N - 1) { x[i] = (i % 11) * 1.0 }
+w := make_seq(KS, 0.0)
+for k in 0..(KS - 1) { w[k] = (k + 1) * 0.5 }
+
+t = time.now()
+out_len = N - KS + 1
+y := make_seq(out_len, 0.0)
+for i in 0..(out_len - 1) {
+    acc := 0.0
+    for k in 0..(KS - 1) {
+        acc += x[i + k] * w[k]
+    }
+    y[i] = acc
+}
+ms = time.elapsed_ms(t)
+
+checksum := 0.0
+for v in y { checksum += v }
+print(fmt("ML_CONV1D N={} KS={} ms={} out_len={} checksum={}", N, KS, ms, out_len, checksum))

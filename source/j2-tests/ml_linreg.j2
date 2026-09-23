@@ -1,0 +1,63 @@
+# Linear regression via gradient descent
+
+N = 400
+D = 8
+ITERS = 20
+LR = 0.01
+
+rand.seed(42)
+
+# y from true weights plus small noise
+w_true := []
+for d in 0..(D - 1) { w_true += [rand.next_float() * 2.0 - 1.0] }
+
+x := []           # flat N*D
+y := []
+for i in 0..(N - 1) {
+    acc := 0.0
+    for d in 0..(D - 1) {
+        xv = rand.next_float() * 2.0 - 1.0
+        x += [xv]
+        acc += xv * w_true[d]
+    }
+    y += [acc + (rand.next_float() - 0.5) * 0.01]
+}
+
+# Init weights
+w := []
+for d in 0..(D - 1) { w += [0.0] }
+
+t = time.now()
+for it in 0..ITERS {
+    # Forward + gradient
+    grad := []
+    for d in 0..(D - 1) { grad += [0.0] }
+    loss := 0.0
+    for i in 0..(N - 1) {
+        yhat := 0.0
+        for d in 0..(D - 1) { yhat += x[i * D + d] * w[d] }
+        err = yhat - y[i]
+        loss += err * err
+        # accumulate grad[d] += err * x[i*D+d]
+        for d in 0..(D - 1) {
+            grad[d] = grad[d] + err * x[i * D + d]
+        }
+    }
+    # Update
+    for d in 0..(D - 1) {
+        w[d] = w[d] - LR * (grad[d] / N)
+    }
+}
+ms = time.elapsed_ms(t)
+
+# Final loss for reporting
+final_loss := 0.0
+for i in 0..(N - 1) {
+    yhat := 0.0
+    for d in 0..(D - 1) { yhat += x[i * D + d] * w[d] }
+    err = yhat - y[i]
+    final_loss += err * err
+}
+final_loss = final_loss / N
+
+print(fmt("ML_LINREG N={} D={} ITERS={} ms={} final_loss={}", N, D, ITERS, ms, final_loss))

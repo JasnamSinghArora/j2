@@ -1,0 +1,17 @@
+# wc, line/word/byte counts via fs.read_lines
+args = proc.argv()
+if count(args) < 2 {
+    print("usage: wc FILE")
+} else {
+    path = args[1]
+    lines = fs.read_lines(path)
+    n_lines = count(lines)
+    n_bytes := 0
+    n_words := 0
+    for l in lines {
+        n_bytes += len(l) + 1
+        words = split(l, " ")
+        n_words += count(words)
+    }
+    print(fmt("{} {} {} {}", n_lines, n_words, n_bytes, path))
+}

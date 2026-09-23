@@ -1,0 +1,18 @@
+# http_get, fetch URL and print truncated body
+args = proc.argv()
+url := "https://httpbin.org/get"
+if count(args) >= 2 { url = args[1] }
+
+try {
+    r = http.get(url)
+    print(fmt("status={}", r.status))
+    body = r.body
+    if len(body) > 200 {
+        print(slice(body, 0, 200))
+        print("...")
+    } else {
+        print(body)
+    }
+}
+else RuntimeError { print("connection failed (offline or unreachable)") }
+else { print("unexpected error") }

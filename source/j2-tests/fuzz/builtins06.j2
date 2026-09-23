@@ -1,0 +1,12 @@
+# string builtins (upper, trim, contains, slice, join)
+s = "Hello, World"
+print(fmt("up={} lo={}", upper(s), lower(s)))
+print(fmt("trim=[{}]", trim("  pad  ")))
+print(fmt("contains {} {}", contains(s, "World"), contains(s, "xyz")))
+print(fmt("slice={}", slice(s, 0, 5)))
+print(fmt("join={}", join(["a", "b", "c"], "-")))
+parts := []
+for n in 1..4 {
+    parts = parts + [str(n)]
+}
+print(fmt("built={} count={}", join(parts, ","), len(parts)))
