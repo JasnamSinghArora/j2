@@ -1,0 +1,16 @@
+# manual product/max/min vs builtins, running-max idiom
+s = [4, 7, 2, 9, 5, 1, 8]
+prod := 1
+for v in s {
+    prod *= v
+}
+running_max := s[0]
+running_min := s[0]
+for i in 1..(len(s) - 1) {
+    v = s[i]
+    if v > running_max { running_max = v }
+    if v < running_min { running_min = v }
+}
+print(fmt("product={}", prod))
+print(fmt("manual_max={} builtin_max={}", running_max, max(s)))
+print(fmt("manual_min={} builtin_min={}", running_min, min(s)))

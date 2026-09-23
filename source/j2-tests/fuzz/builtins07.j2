@@ -1,0 +1,16 @@
+# int/float division, negative modulo, compound assigns, x++
+print(fmt("intdiv {} floatdiv {}", 7 / 2, 7.0 / 2.0))
+print(fmt("mod {} {} {}", 7 % 3, (0 - 7) % 3, 7 % (0 - 3)))
+a := 10
+a += 5
+a -= 3
+a *= 2
+a /= 4
+print(fmt("compound a={}", a))
+c := 0
+c++
+c++
+c--
+print(fmt("incdec c={}", c))
+# round/floor/ceil interplay with division
+print(fmt("avg floor={}", floor((3 + 4 + 5) / 3.0)))

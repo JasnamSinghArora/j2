@@ -1,0 +1,9 @@
+# exercise parallel reducer: 2M seq summed 20x
+big = collect(1..2000000)
+i := 0
+total := 0
+repeat i < 20 {
+    total = sum(big)
+    i++
+}
+print(total)

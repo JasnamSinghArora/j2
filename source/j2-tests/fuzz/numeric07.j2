@@ -1,0 +1,8 @@
+# constant reassignment must error on both paths
+x = 10
+print(fmt("x={}", x))     # 10
+y = x * 2
+print(fmt("y={}", y))     # 20
+# `x` was bound with `=`
+x = 99
+print("unreachable")

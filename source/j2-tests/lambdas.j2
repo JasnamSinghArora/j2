@@ -1,0 +1,24 @@
+# lambdas - anonymous func expressions, higher-order helpers
+
+nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# map: lambda squared
+sq = map(nums, func(x) = x * x)
+print(sq)
+
+# filter: lambda evens
+evens = filter(nums, func(x) = x % 2 == 0)
+print(evens)
+
+# reduce: lambda sum
+total = reduce(nums, 0, func(a, b) = a + b)
+print(total)
+
+# sort_by: descending
+desc = sort_by(nums, func(a, b) = b - a)
+print(desc)
+
+# Closure-style capture: lambda references outer `mult`.
+mult = 3
+times = map(nums, func(x) = x * mult)
+print(times)

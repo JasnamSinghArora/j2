@@ -1,0 +1,20 @@
+# division, negative remainder, local shadowing global constant
+q1 = 7 / 2          # float division -> 3.5
+q2 = 7 % 3          # 1
+q3 = -7 % 3         # negative remainder
+q4 = 7 % -3
+print(fmt("q1={} q2={} q3={} q4={}", q1, q2, q3, q4))
+
+scale = 3
+func apply(v) = {
+    scale = 10       # local constant shadows global 'scale'
+    give v * scale
+}
+print(fmt("apply={} globalScale={}", apply(4), scale))
+
+# compound assign, float accumulator from int seed
+acc := 1
+acc *= 2
+acc *= 3
+acc /= 4            # 6 / 4 -> 1.5
+print(fmt("acc={}", acc))

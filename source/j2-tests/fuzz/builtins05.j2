@@ -1,0 +1,11 @@
+# Transcendentals at exact/known points
+print(fmt("sin0={} cos0={}", sin(0.0), cos(0.0)))
+print(fmt("exp0={} ln1={}", exp(0.0), ln(1.0)))
+print(fmt("expln {}", ln(exp(1.0))))
+# deterministic transcendental sum over short loop
+acc := 0.0
+for k in 1..5 {
+    t = k * 1.0
+    acc += sqrt(t) + ln(t)
+}
+print(fmt("acc={}", acc))

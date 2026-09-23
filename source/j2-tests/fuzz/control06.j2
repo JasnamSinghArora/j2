@@ -1,0 +1,37 @@
+# arithmetic edge cases; both paths must agree
+
+# Division of two ints yields a float
+assert 5 / 2 == 2.5, "int/int is float division"
+assert 6 / 2 == 3, "exact division compares equal to int"
+assert 10 / 3 == 10.0 / 3.0, "division consistent"
+
+# Negative modulo: Euclidean remainder (always non-negative).
+assert -7 % 3 == 2, "negative dividend modulo"
+assert 7 % -3 == 1, "negative divisor modulo"
+assert -7 % -3 == 2, "both negative modulo"
+
+# Exponentiation.
+assert 2 ** 10 == 1024, "pow int"
+assert 3 ** 0 == 1, "pow zero exponent"
+
+# Banker's rounding (round half to even).
+assert round(2.5) == 2, "round half to even down"
+assert round(3.5) == 4, "round half to even up"
+assert round(-2.5) == -2, "round negative half to even"
+
+# Other math builtins.
+assert abs(-9) == 9, "abs"
+assert max(min(8, 5), 2) == 5, "nested max/min"
+assert clamp(15, 0, 10) == 10, "clamp high"
+assert clamp(-3, 0, 10) == 0, "clamp low"
+assert floor(3.9) == 3, "floor"
+assert ceil(3.1) == 4, "ceil"
+assert sqrt(144) == 12, "sqrt perfect square"
+
+# Boolean short-circuit + comparison chains.
+assert (true and not false) == true, "boolean and/not"
+assert (false or 2 > 1) == true, "boolean or with comparison"
+
+print(fmt("control06 5/2={} -7%3={} round(2.5)={} 2**10={}",
+    5 / 2, -7 % 3, round(2.5), 2 ** 10))
+print("control06 PASS")

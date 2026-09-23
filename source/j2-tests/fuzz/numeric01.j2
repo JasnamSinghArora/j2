@@ -1,0 +1,14 @@
+# exact int division stays Int, inexact Float
+a = 6 / 2          # 3   (exact -> Int)
+b = 7 / 2          # 3.5 (inexact -> Float)
+c = -7 / 2         # -3.5
+d = 1 / 4          # 0.25
+e = 10 / 5         # 2
+f = 7 / 2.0        # 3.5 (mixed -> Float)
+g = 2 + 3 / 2      # 2 + 1.5 = 3.5  (precedence)
+h = (2 + 3) / 2    # 5 / 2 = 2.5
+print(fmt("a={} b={} c={} d={} e={}", a, b, c, d, e))
+print(fmt("f={} g={} h={}", f, g, h))
+print(a == 3)
+print(b == 3.5)
+print(e == 2)

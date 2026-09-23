@@ -1,0 +1,10 @@
+# json_pretty, parse JSON and pretty-print
+args = proc.argv()
+data := ""
+if count(args) >= 2 {
+    data = fs.read_file(args[1])
+} else {
+    data = "{\"x\":1,\"y\":[1,2,3],\"nested\":{\"a\":true,\"b\":null}}"
+}
+parsed = json.parse(data)
+print(json.stringify_pretty(parsed))

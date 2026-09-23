@@ -1,0 +1,12 @@
+# indexed assignment, overwrite, in-place increment, swap
+s := [0, 1, 2, 3, 4]
+s[0] = 100
+s[4] = 400
+s[2] = s[2] + 7
+tmp = s[1]
+s[1] = s[3]
+s[3] = tmp
+for i in 0..(len(s) - 1) {
+    print(fmt("s[{}]={}", i, s[i]))
+}
+print(fmt("sum={}", sum(s)))

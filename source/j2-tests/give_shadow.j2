@@ -1,0 +1,17 @@
+# regression for interpreter give, try escape, shadowing
+func classify(n) = {
+    if n < 0 { give "neg" }
+    if n == 0 { give "zero" }
+    give "pos"
+}
+func via_try(x) = { try { give x * 2 } else { give -1 } }
+gx = 10
+func shadows() = { gx = 5  give gx }
+
+assert classify(-5) == "neg", "give neg"
+assert classify(0) == "zero", "give zero"
+assert classify(7) == "pos", "give pos (fallthrough)"
+assert via_try(10) == 20, "give escapes try"
+assert shadows() == 5, "local shadows global const"
+assert gx == 10, "global unchanged by shadow"
+print("GIVE_SHADOW PASS")

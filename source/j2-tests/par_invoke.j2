@@ -1,0 +1,26 @@
+# parallel_invoke in `both` must match serial reference
+func work(s: seq<float>) -> float = {
+    acc := 0.0
+    for i in 0..(len(s)-1) {
+        t := s[i]
+        acc = acc + sqrt(t) * 1.5 + t * t - 0.25 + sin(t) * cos(t) + exp(t * 0.001) - ln(t + 2.0) + t / 3.0
+    }
+    give acc
+}
+func both(x: seq<float>, y: seq<float>) -> float = {
+    a := work(x)
+    b := work(y)
+    give a + b
+}
+n = 50000
+xs := make_seq(n, 0.0)
+ys := make_seq(n, 0.0)
+for i in 0..(n-1) {
+    xs[i] = i * 0.001 + 1.0
+    ys[i] = i * 0.002 + 2.0
+}
+ref_a = work(xs)
+ref_b = work(ys)
+combined = both(xs, ys)
+assert combined == ref_a + ref_b, "parallel_invoke result must match serial"
+print("PAR_INVOKE PASS")

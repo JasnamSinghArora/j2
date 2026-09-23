@@ -22,7 +22,7 @@ func estimate(n: int) -> float = {
 
 ## Install (macOS, Apple Silicon)
 
-Download the latest `j-<version>-aarch64-apple-darwin.tar.gz` from
+Download the latest `j2-<version>-aarch64-apple-darwin.tar.gz` from
 [**Releases**](https://github.com/JasnamSinghArora/j2/releases), then:
 
 ```sh
@@ -61,6 +61,14 @@ You get syntax highlighting for `.j2` files, a ▶ Run button (`Cmd+Shift+R`), a
 | `j file.j2` | Run instantly (interpreter) |
 | `j2 build file.j2 -o out` | Compile to a native, auto-parallelized binary |
 | `j2 --version` / `j --help` | The usual |
+
+## Source
+
+The compiler source is in [`source/`](source/): the frontend under
+`compiler/j2_compiler`, the auto-parallelization passes under
+`compiler/j2_passes`, the runtime under `library/j2_runtime`, the driver under
+`src/bin/j2`, and the tests under `j2-tests`. See
+[`source/README.md`](source/README.md) for the full layout.
 
 ## License
 

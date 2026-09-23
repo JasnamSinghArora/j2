@@ -1,0 +1,13 @@
+# nested 3x3 grid, indexing, mutation, 2D sum
+grid := [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+print(fmt("grid[0][0]={} grid[1][2]={} grid[2][1]={}", grid[0][0], grid[1][2], grid[2][1]))
+grid[1][1] = 50
+print(fmt("after_set grid[1][1]={}", grid[1][1]))
+total := 0
+for r in 0..(len(grid) - 1) {
+    row = grid[r]
+    for c in 0..(len(row) - 1) {
+        total += row[c]
+    }
+}
+print(fmt("grid_sum={}", total))

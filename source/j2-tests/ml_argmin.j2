@@ -1,0 +1,22 @@
+# argmin, index of smallest value
+
+N = 20000
+rand.seed(51966)
+data := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    data[i] = rand.next_float()
+}
+
+t = time.now()
+best_v := data[0]
+best_i := 0
+for i in 1..(N - 1) {
+    v := data[i]
+    if v < best_v {
+        best_v = v
+        best_i = i
+    }
+}
+ms = time.elapsed_ms(t)
+
+print(fmt("ML_ARGMIN N={} ms={} idx={} val={}", N, ms, best_i, best_v))

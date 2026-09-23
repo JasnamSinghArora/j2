@@ -1,0 +1,17 @@
+# early give from loop, recursive count_factors
+
+func first_divisor(n) = {
+    for d in 2..n {
+        if n % d == 0 { give d }
+    }
+    give n
+}
+
+func count_prime_factors(n) = {
+    if n <= 1 { give 0 }
+    d := first_divisor(n)
+    give 1 + count_prime_factors(n / d)
+}
+
+print(fmt("fd2={} fd15={} fd17={} fd49={}", first_divisor(2), first_divisor(15), first_divisor(17), first_divisor(49)))
+print(fmt("cpf1={} cpf12={} cpf17={} cpf60={}", count_prime_factors(1), count_prime_factors(12), count_prime_factors(17), count_prime_factors(60)))

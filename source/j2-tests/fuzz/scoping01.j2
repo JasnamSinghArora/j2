@@ -1,0 +1,19 @@
+# constant (=) vs mutable (:=), compound assigns
+c = 10
+m := 5
+m := m + c        # re-bind mutable: stays mutable -> 15
+m += 5            # 20
+m -= 3            # 17
+m *= 2            # 34
+m /= 2            # 17.0 (division yields float)
+print(fmt("c={} m={}", c, m))
+
+n := 100
+n++
+n++
+n--
+print(fmt("n={}", n))
+
+# constant used in expressions, never mutated
+total := c + m + 0
+print(fmt("total={}", total))

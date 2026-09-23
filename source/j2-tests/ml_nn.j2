@@ -1,0 +1,84 @@
+# tiny 2-layer MLP forward + backward
+
+N = 80
+D_IN = 4
+H = 6
+EPOCHS = 5
+LR = 0.05
+
+rand.seed(99)
+
+# Synthesize inputs
+x := []
+for i in 0..(N * D_IN - 1) { x += [rand.next_float()] }
+y := []
+for i in 0..(N - 1) { y += [rand.next_float() * 2.0 - 1.0] }
+
+# Init weights
+w1 := []
+for i in 0..(D_IN * H - 1) { w1 += [(rand.next_float() - 0.5) * 0.3] }
+w2 := []
+for i in 0..(H - 1) { w2 += [(rand.next_float() - 0.5) * 0.3] }
+
+# activation: tanh approximated as x/(1+|x|)
+func act(z) = z / (1.0 + abs(z))
+func act_deriv(z) = {
+    az = abs(z)
+    one_plus = 1.0 + az
+    1.0 / (one_plus * one_plus)
+}
+
+t = time.now()
+for epoch in 0..EPOCHS {
+    loss := 0.0
+    for i in 0..(N - 1) {
+        # Forward
+        h_pre := []
+        h := []
+        for j in 0..(H - 1) {
+            zj := 0.0
+            for d in 0..(D_IN - 1) { zj += x[i * D_IN + d] * w1[d * H + j] }
+            h_pre += [zj]
+            h += [act(zj)]
+        }
+        # Output (linear)
+        yhat := 0.0
+        for j in 0..(H - 1) { yhat += h[j] * w2[j] }
+        err = yhat - y[i]
+        loss += err * err
+
+        # Backward
+        # dL/dw2[j] = err * h[j]
+        for j in 0..(H - 1) {
+            w2[j] = w2[j] - LR * err * h[j]
+        }
+        # dL/dw1[d*H+j] = err*w2[j]*act'(z_j)*x[i*D+d]
+        for j in 0..(H - 1) {
+            grad_h = err * w2[j] * act_deriv(h_pre[j])
+            for d in 0..(D_IN - 1) {
+                idx = d * H + j
+                w1[idx] = w1[idx] - LR * grad_h * x[i * D_IN + d]
+            }
+        }
+    }
+}
+ms = time.elapsed_ms(t)
+
+# Final loss
+final_loss := 0.0
+for i in 0..(N - 1) {
+    h := []
+    for j in 0..(H - 1) {
+        zj := 0.0
+        for d in 0..(D_IN - 1) { zj += x[i * D_IN + d] * w1[d * H + j] }
+        h += [act(zj)]
+    }
+    yhat := 0.0
+    for j in 0..(H - 1) { yhat += h[j] * w2[j] }
+    err = yhat - y[i]
+    final_loss += err * err
+}
+final_loss = final_loss / N
+
+print(fmt("ML_NN N={} D_IN={} H={} EPOCHS={} ms={} final_loss={}",
+    N, D_IN, H, EPOCHS, ms, final_loss))

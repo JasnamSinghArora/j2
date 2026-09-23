@@ -1,0 +1,58 @@
+{
+  "name": "j2-lang",
+  "displayName": "J2 Language",
+  "description": "J2 language support: syntax highlighting, run, and inline errors.",
+  "version": "0.1.0",
+  "publisher": "j2-lang",
+  "license": "(MIT OR Apache-2.0)",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:j2"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "j2",
+        "aliases": ["J2", "j2"],
+        "extensions": [".j2"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "j2",
+        "scopeName": "source.j2",
+        "path": "./syntaxes/j2.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      { "command": "j2.run", "title": "J2: Run File", "icon": "$(play)" }
+    ],
+    "keybindings": [
+      { "command": "j2.run", "key": "ctrl+shift+r", "mac": "cmd+shift+r", "when": "editorLangId == j2" }
+    ],
+    "menus": {
+      "editor/title/run": [
+        { "command": "j2.run", "when": "editorLangId == j2", "group": "navigation" }
+      ],
+      "commandPalette": [
+        { "command": "j2.run", "when": "editorLangId == j2" }
+      ]
+    },
+    "configuration": {
+      "title": "J2",
+      "properties": {
+        "j2.path": {
+          "type": "string",
+          "default": "j2",
+          "description": "Path to the `j` executable (on PATH by default)."
+        },
+        "j2.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report J2 parse/type errors inline when a file is opened or saved."
+        }
+      }
+    }
+  }
+}

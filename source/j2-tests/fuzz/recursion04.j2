@@ -1,0 +1,18 @@
+# accumulator-style recursion vs trailing-expr helper
+
+func fact_acc(n, acc) = {
+    if n <= 1 { give acc }
+    give fact_acc(n - 1, acc * n)
+}
+
+func sum_to_acc(n, acc) = {
+    if n == 0 { give acc }
+    give sum_to_acc(n - 1, acc + n)
+}
+
+# trailing-expr helper (no branching) for cross-check
+func double(x) = x * 2
+
+print(fmt("fact5={} fact8={} fact1={}", fact_acc(5, 1), fact_acc(8, 1), fact_acc(1, 1)))
+print(fmt("sum10={} sum100={} sum0={}", sum_to_acc(10, 0), sum_to_acc(100, 0), sum_to_acc(0, 0)))
+print(fmt("double sum10 -> {}", double(sum_to_acc(10, 0))))

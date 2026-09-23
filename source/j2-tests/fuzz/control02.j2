@@ -1,0 +1,35 @@
+# for over inclusive ranges and seq literals
+range_sum := 0
+range_count := 0
+for i in 3..7 {
+    range_sum += i
+    range_count++
+}
+# 3+4+5+6+7 = 25, 5 iterations
+assert range_sum == 25, "inclusive range sum"
+assert range_count == 5, "inclusive range count"
+
+# Single-element inclusive range a..a iterates exactly once.
+solo := 0
+for x in 4..4 {
+    solo += x
+}
+assert solo == 4, "single-element range"
+
+# Empty when start > end (no iterations).
+empty := 0
+for y in 9..2 {
+    empty++
+}
+assert empty == 0, "descending range is empty"
+
+# iterate seq literal in declared order
+seq_out := ""
+for w in ["a", "b", "c"] {
+    seq_out += w
+}
+assert seq_out == "abc", "seq literal order"
+
+print(fmt("control02 range_sum={} count={} solo={} empty={} seq={}",
+    range_sum, range_count, solo, empty, seq_out))
+print("control02 PASS")

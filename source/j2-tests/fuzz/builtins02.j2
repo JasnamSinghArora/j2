@@ -1,0 +1,8 @@
+# max/min, two-arg and over int/float seqs
+ints = [3, 1, 4, 1, 5, 9, 2, 6]
+floats = [1.5, 2.25, 0.5, 9.75, 3.0]
+print(fmt("two-arg max={} min={}", max(10, 7), min(10, 7)))
+print(fmt("two-arg neg max={} min={}", max(0 - 3, 0 - 8), min(0 - 3, 0 - 8)))
+print(fmt("seq ints max={} min={}", max(ints), min(ints)))
+print(fmt("seq floats max={} min={}", max(floats), min(floats)))
+print(fmt("single max={} min={}", max([7]), min([7])))

@@ -1,0 +1,7 @@
+# serial baseline; N below 32_768 parallel threshold
+
+N = 20000
+t = time.now()
+s = sum(1..N)
+ms = time.elapsed_ms(t)
+print(fmt("SERIAL N={} sum={} ms={}", N, s, ms))

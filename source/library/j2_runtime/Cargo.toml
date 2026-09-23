@@ -1,0 +1,26 @@
+[package]
+name = "j2_runtime"
+version = "0.0.0"
+edition = "2021"
+description = "The J2 programming language runtime: J2Value, built-ins, stdlib modules, parallel hooks."
+
+[lib]
+name = "j2_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+regex = "1"
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sha2 = "0.10"
+md-5 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+base64 = "0.22"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+whoami = "1"
+num_cpus = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "io-util", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+futures = "0.3"
+
+[workspace]

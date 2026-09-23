@@ -1,0 +1,10 @@
+# fmt with mixed types
+i = 42
+f = 3.5
+s = "hi"
+b = (1 < 2)
+seq = [1, 2, 3]
+print(fmt("int={} float={} str={} bool={} seq={}", i, f, s, b, seq))
+print(fmt("neg={} zero={} big={}", 0 - 7, 0, 1000000))
+print(fmt("{} + {} = {}", i, 8, i + 8))
+print(fmt("repeat {} {} {}", s, s, s))

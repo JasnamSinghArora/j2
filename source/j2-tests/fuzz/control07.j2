@@ -1,0 +1,50 @@
+# recursion base cases, nested if/else, inclusive ranges
+func fact(n) = {
+    if n <= 1 {
+        give 1
+    }
+    give n * fact(n - 1)
+}
+
+func fib(n) = {
+    if n < 2 {
+        give n
+    }
+    give fib(n - 1) + fib(n - 2)
+}
+
+func gcd(a, b) = {
+    if b == 0 {
+        give a
+    }
+    give gcd(b, a % b)
+}
+
+# Tabulate factorials 0..6 over an inclusive range.
+fline := ""
+for n in 0..6 {
+    if n > 0 {
+        fline += ","
+    }
+    fline += fmt("{}", fact(n))
+}
+assert fline == "1,1,2,6,24,120,720", "factorial table"
+
+# Fibonacci 0..10.
+fibline := ""
+for n in 0..10 {
+    if n > 0 {
+        fibline += ","
+    }
+    fibline += fmt("{}", fib(n))
+}
+assert fibline == "0,1,1,2,3,5,8,13,21,34,55", "fibonacci table"
+
+assert gcd(48, 36) == 12, "gcd base case"
+assert gcd(17, 5) == 1, "coprime gcd"
+assert fact(0) == 1, "factorial base case"
+
+print(fmt("control07 fact6={} fib10={} gcd={}", fact(6), fib(10), gcd(48, 36)))
+print(fline)
+print(fibline)
+print("control07 PASS")

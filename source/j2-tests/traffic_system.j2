@@ -1,0 +1,25 @@
+# traffic system end-to-end, ambulances per lane
+
+lanes = ["up", "down", "left", "right"]
+plate_numbers = {
+    up: ["CAR-1", "AMB-2", "CAR-3", "AMB-4"],
+    down: ["CAR-5", "CAR-6", "CAR-7"],
+    left: ["AMB-8", "CAR-9", "AMB-10"],
+    right: ["CAR-11"]
+}
+
+func is_amb(p) = slice(p, 0, 4) == "AMB-"
+
+print("=== TRAFFIC SYSTEM LOG ===")
+total := 0
+for lane in lanes {
+    plates = plate_numbers[lane]
+    n := 0
+    for p in plates if is_amb {
+        n++
+    }
+    total += n
+    print(fmt("lane={} cars={} ambulances={}", lane, count(plates), n))
+}
+print(fmt("total_ambulances={}", total))
+print("PASS")

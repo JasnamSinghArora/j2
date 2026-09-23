@@ -1,0 +1,25 @@
+# comparisons; and/or return operand; short-circuit skips 1/0
+print(3 < 5)            # true
+print(5 <= 5)           # true
+print(5 < 5)            # false
+print(2 >= 7)           # false
+print(4 != 4)           # false
+print(not (3 > 10))     # true
+
+# and/or yield the operand, not a bool.
+print(5 and 3)          # 3
+print(0 and 9)          # 0
+print(0 or 7)           # 7
+print(5 or 9)           # 5
+
+# short-circuit: RHS 1/0 never evaluated
+z = 0
+guard1 = (z != 0) and ((1 / z) > 0)   # false (RHS skipped)
+guard2 = (z == 0) or ((1 / z) > 0)    # true  (RHS skipped)
+print(guard1)           # false
+print(guard2)           # true
+
+# Chained-condition style via explicit and.
+x = 5
+print((1 <= x) and (x <= 10))   # true
+print((1 <= x) and (x < 5))     # false

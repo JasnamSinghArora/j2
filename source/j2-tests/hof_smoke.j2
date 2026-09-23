@@ -1,0 +1,37 @@
+# HOF smoke; native drivers monomorphize fn args
+
+func sq(x: float) -> float = x * x
+func inc(x: float) -> float = x + 1.0
+func dbl(x: int) -> int = x * 2
+
+# HOFs (function-typed parameter).
+func twice(f: func(float) -> float, x: float) -> float = f(f(x))
+func twice_i(f: func(int) -> int, x: int) -> int = f(f(x))
+# Forwards its function parameter into another HOF.
+func quad(f: func(float) -> float, x: float) -> float = twice(f, twice(f, x))
+
+# native drivers make the calls native-to-native
+func run_named(x: float) -> float = twice(sq, x)
+func run_inc(x: float) -> float = twice(inc, x)
+func run_lambda(x: float) -> float = twice(func(y) = y * 2.0, x)
+func run_capture(x: float, k: float) -> float = twice(func(y) = y * k, x)
+func run_quad(x: float) -> float = quad(inc, x)
+func run_int(x: int) -> int = twice_i(dbl, x)
+
+# named-fn argument: sq(sq(3)) = 81
+assert run_named(3.0) == 81.0, "run_named(3) should be 81"
+# inc(inc(10)) = 12
+assert run_inc(10.0) == 12.0, "run_inc(10) should be 12"
+# ((5*2)*2) = 20
+assert run_lambda(5.0) == 20.0, "run_lambda(5) should be 20"
+# ((2*3)*3) = 18 - captured scalar k
+assert run_capture(2.0, 3.0) == 18.0, "run_capture(2,3) should be 18"
+# inc four times from 0 gives 4
+assert run_quad(0.0) == 4.0, "run_quad(0) should be 4"
+# 5*2*2 = 20 (int)
+assert run_int(5) == 20, "run_int(5) should be 20"
+
+# top-level dynamic-boundary call, inc(inc(7)) = 9
+assert twice(inc, 7.0) == 9.0, "twice(inc,7) should be 9 (dynamic)"
+
+print("HOF_SMOKE PASS")

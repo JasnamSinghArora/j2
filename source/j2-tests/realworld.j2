@@ -1,0 +1,42 @@
+# log parsing, count errors/payloads, fingerprint by length
+
+N_LINES = 2000
+lines := make_seq(N_LINES, "")
+for i in 0..(N_LINES - 1) {
+    m := i % 20
+    if m == 0 {
+        lines[i] = fmt("ERROR request id={} status=500", i)
+    } else if m < 4 {
+        lines[i] = fmt("WARN slow request id={}", i)
+    } else {
+        lines[i] = fmt("PAYLOAD={} size={}", i, i * 8)
+    }
+}
+
+# Pass 1: count errors
+n_err := 0
+for l in lines {
+    if contains(l, "ERROR ") {
+        n_err++
+    }
+}
+
+# Pass 2: count payloads
+n_pay := 0
+for l in lines {
+    if contains(l, "PAYLOAD=") {
+        n_pay++
+    }
+}
+
+# Pass 3: fingerprint via summed payload lengths
+sumlen := 0
+for l in lines {
+    if contains(l, "PAYLOAD=") {
+        sumlen += len(l)
+    }
+}
+
+print(fmt("REALWORLD N={} errors={} payloads={} payload_sumlen={}",
+    N_LINES, n_err, n_pay, sumlen))
+print("PASS")

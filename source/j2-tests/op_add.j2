@@ -1,0 +1,6 @@
+# typed-reduction add; sum equals N*(N+1)/2
+
+N = 1000000
+result := sum(1..N)
+expected = N * (N + 1) / 2
+print(fmt("OP_ADD N={} sum={} expected={} pass={}", N, result, expected, result == expected))

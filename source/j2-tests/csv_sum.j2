@@ -1,0 +1,19 @@
+# csv_sum FILE COLUMN, sums a 0-indexed column
+args = proc.argv()
+if count(args) < 3 {
+    print("usage: csv_sum FILE COLUMN")
+} else {
+    path = args[1]
+    col = num(args[2])
+    lines = fs.read_lines(path)
+    total := 0.0
+    for l in lines {
+        fields = split(l, ",")
+        if col < count(fields) {
+            try { total += num(trim(fields[col])) }
+            else ConversionError { }
+            else { }
+        }
+    }
+    print(fmt("sum(col {}) = {}", col, total))
+}

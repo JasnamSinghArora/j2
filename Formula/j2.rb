@@ -1,7 +1,4 @@
-# Homebrew formula for J2 (macOS). Published from the release at
-# https://github.com/JasnamSinghArora/j2/releases — to offer `brew install`,
-# put this file in a public repo named `homebrew-j2` as Formula/j2.rb, then:
-#   brew tap JasnamSinghArora/j2 && brew install j2
+# Homebrew formula for J2 on macOS
 class J2 < Formula
   desc "The J2 programming language (native + auto-parallel, interpreter-first)"
   homepage "https://github.com/JasnamSinghArora/j2"

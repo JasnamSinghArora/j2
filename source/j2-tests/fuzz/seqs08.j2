@@ -1,0 +1,20 @@
+# seq of maps; only scalars printed, ordered
+people = [
+    {name: "Ann", age: 30},
+    {name: "Bob", age: 25},
+    {name: "Cy",  age: 41}
+]
+total_age := 0
+oldest := people[0].age
+oldest_name := people[0].name
+for i in 0..(len(people) - 1) {
+    p = people[i]
+    total_age += p.age
+    if p.age > oldest {
+        oldest = p.age
+        oldest_name = p.name
+    }
+}
+print(fmt("count={} total_age={}", len(people), total_age))
+print(fmt("first={} via_index={}", people[0].name, people[2]["name"]))
+print(fmt("oldest={} age={}", oldest_name, oldest))

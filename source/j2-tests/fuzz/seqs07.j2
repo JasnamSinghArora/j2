@@ -1,0 +1,25 @@
+# find_first, first index above thr, else -1
+func find_first(s, thr) = {
+    for i in 0..(len(s) - 1) {
+        if s[i] > thr {
+            give i
+        }
+    }
+    give -1
+}
+
+# count_until skips zeros, stops at first negative
+func count_until(s) = {
+    n := 0
+    for v in s {
+        if v == 0 { skip }
+        if v < 0 { stop }
+        n += 1
+    }
+    give n
+}
+
+data = [3, 8, 1, 12, 4]
+print(fmt("first>10 at idx={}", find_first(data, 10)))
+print(fmt("first>99 at idx={}", find_first(data, 99)))
+print(fmt("counted={}", count_until([5, 0, 7, 0, 2, -1, 9])))

@@ -1,0 +1,34 @@
+# native vs dynamic saxpy, reps amortize boundary
+
+func bench_native(y: seq<float>, x: seq<float>, a: float, reps: int) -> nil = {
+    for r in 0..(reps - 1) {
+        for i in 0..(len(y) - 1) {
+            y[i] = y[i] + a * x[i]
+        }
+    }
+}
+
+N = 200000
+REPS = 200
+a = 0.000001
+
+yn := make_seq(N, 1.0)
+xn := make_seq(N, 2.0)
+t0 = time.now()
+bench_native(yn, xn, a, REPS)
+ms_native = time.elapsed_ms(t0)
+
+yd := make_seq(N, 1.0)
+t1 = time.now()
+for r in 0..(REPS - 1) {
+    for i in 0..(N - 1) {
+        yd[i] = yd[i] + a * xn[i]
+    }
+}
+ms_dyn = time.elapsed_ms(t1)
+
+print(fmt("NATIVE_PARITY N={} REPS={}", N, REPS))
+print(fmt("  typed-J2 native ms={}", ms_native))
+print(fmt("  dynamic-J2      ms={}", ms_dyn))
+print(fmt("  speedup        {}x", ms_dyn / ms_native))
+print(fmt("  parity check   native[0]={} dyn[0]={}", yn[0], yd[0]))

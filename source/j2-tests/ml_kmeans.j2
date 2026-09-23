@@ -1,0 +1,86 @@
+# k-means clustering, small parameters for J2
+
+N = 200
+D = 4
+K = 3
+ITERS = 10
+
+rand.seed(7)
+
+# Synthesize N points in D dims
+points := []
+for i in 0..(N - 1) {
+    for d in 0..(D - 1) {
+        points += [rand.next_float()]
+    }
+}
+
+# Init centroids = first K points
+centroids := []
+for k in 0..(K - 1) {
+    for d in 0..(D - 1) {
+        centroids += [points[k * D + d]]
+    }
+}
+
+t = time.now()
+for it in 0..ITERS {
+    # Assign each point to nearest centroid
+    assignments := []
+    for i in 0..(N - 1) {
+        best_k := 0
+        best_d := 1.0e30
+        for k in 0..(K - 1) {
+            dist := 0.0
+            for d in 0..(D - 1) {
+                diff = points[i * D + d] - centroids[k * D + d]
+                dist += diff * diff
+            }
+            if dist < best_d {
+                best_d = dist
+                best_k = k
+            }
+        }
+        assignments += [best_k]
+    }
+    # Recompute centroids
+    new_cent := []
+    for k in 0..(K - 1) {
+        for d in 0..(D - 1) { new_cent += [0.0] }
+    }
+    counts := []
+    for k in 0..(K - 1) { counts += [0] }
+    for i in 0..(N - 1) {
+        k = assignments[i]
+        counts[k] = counts[k] + 1
+        for d in 0..(D - 1) {
+            idx = k * D + d
+            new_cent[idx] = new_cent[idx] + points[i * D + d]
+        }
+    }
+    for k in 0..(K - 1) {
+        if counts[k] > 0 {
+            for d in 0..(D - 1) {
+                centroids[k * D + d] = new_cent[k * D + d] / counts[k]
+            }
+        }
+    }
+}
+ms = time.elapsed_ms(t)
+
+# Final inertia
+inertia := 0.0
+for i in 0..(N - 1) {
+    best_d := 1.0e30
+    for k in 0..(K - 1) {
+        d_sum := 0.0
+        for d in 0..(D - 1) {
+            diff = points[i * D + d] - centroids[k * D + d]
+            d_sum += diff * diff
+        }
+        if d_sum < best_d { best_d = d_sum }
+    }
+    inertia += best_d
+}
+print(fmt("ML_KMEANS N={} D={} K={} ITERS={} ms={} inertia={}",
+    N, D, K, ITERS, ms, inertia))

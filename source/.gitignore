@@ -1,0 +1,6 @@
+target/
+*.log
+.DS_Store
+control_flow_graphs/
+mir_dump/
+ddg_out/

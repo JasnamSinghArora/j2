@@ -1,0 +1,15 @@
+# Function-local binding shadows a top-level constant
+g = 100
+
+func shadow() = {
+    g = 5  # fresh local constant shadows global inside fn
+    give g
+}
+
+func usesGlobal() = {
+    give g + 1   # reads the global g (100)
+}
+
+a = shadow()
+b = usesGlobal()
+print(fmt("shadow={} usesGlobal={} global={}", a, b, g))

@@ -1,0 +1,39 @@
+# Covers every loop form from the spec.
+
+# Range loop
+for i in 1..3 {
+    print(i)
+}
+
+# For-each loop
+names = ["Jay", "Alex", "Sam"]
+for n in names {
+    print(n)
+}
+
+# Filtered loop
+for i in 1..10 if i % 2 == 0 {
+    print(i)
+}
+
+# Repeat loop
+x := 0
+repeat x < 3 {
+    print(x)
+    x++
+}
+
+# Do-repeat
+y := 0
+do {
+    print(y)
+    y++
+} repeat y < 3
+
+# Infinite loop with stop
+z := 0
+loop {
+    z++
+    stop if z >= 3
+}
+print(z)

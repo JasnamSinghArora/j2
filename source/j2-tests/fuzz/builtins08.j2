@@ -1,0 +1,25 @@
+# Builtins inside functions + recursion base case
+func dist(x, y) = sqrt(x * x + y * y)
+
+func first_over(s, limit) = {
+    for v in s {
+        if v > limit { give v }
+    }
+    give 0 - 1
+}
+
+func fact(n) = {
+    if n <= 1 { give 1 }
+    give n * fact(n - 1)
+}
+
+print(fmt("dist={}", dist(3.0, 4.0)))
+print(fmt("first_over={}", first_over([1, 4, 9, 16, 25], 10)))
+print(fmt("none_over={}", first_over([1, 2, 3], 100)))
+print(fmt("fact5={} fact1={}", fact(5), fact(1)))
+print(fmt("nested={}", clamp(abs(0 - 7), min(2, 3), max(4, 5))))
+running := 0
+for i in 1..6 {
+    running += i
+}
+print(fmt("running={}", running))

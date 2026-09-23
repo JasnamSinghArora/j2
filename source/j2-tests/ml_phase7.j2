@@ -1,0 +1,35 @@
+# Phase 7 mix: clamp + multi-axpy.
+
+N = 20000
+lo = 0.0
+hi = 50.0
+alpha = 1.5
+beta = 0.25
+
+a := make_seq(N, 0.0)
+x := make_seq(N, 0.0)
+z := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    a[i] = (i % 100) - 25.0
+    x[i] = i * 0.1
+    z[i] = (N - i) * 0.05
+}
+
+t = time.now()
+dst1 := make_seq(N, 0.0)
+dst2 := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    v := a[i]
+    cv := v
+    if cv < lo { cv = lo }
+    if cv > hi { cv = hi }
+    dst1[i] = cv
+    dst2[i] = alpha * x[i] + beta * z[i]
+}
+ms = time.elapsed_ms(t)
+
+s1 := 0.0
+s2 := 0.0
+for v in dst1 { s1 += v }
+for v in dst2 { s2 += v }
+print(fmt("ML_PHASE7 N={} ms={} clamp_sum={} maxpy_sum={}", N, ms, s1, s2))

@@ -1,0 +1,15 @@
+# tiny Ackermann plus recursive integer power
+
+func ack(m, n) = {
+    if m == 0 { give n + 1 }
+    if n == 0 { give ack(m - 1, 1) }
+    give ack(m - 1, ack(m, n - 1))
+}
+
+func ipow(base, exp) = {
+    if exp == 0 { give 1 }
+    give base * ipow(base, exp - 1)
+}
+
+print(fmt("ack0,0={} ack1,1={} ack2,2={} ack3,3={}", ack(0, 0), ack(1, 1), ack(2, 2), ack(3, 3)))
+print(fmt("pow2,0={} pow2,10={} pow3,4={} pow5,3={}", ipow(2, 0), ipow(2, 10), ipow(3, 4), ipow(5, 3)))

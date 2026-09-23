@@ -1,0 +1,9 @@
+# sha256sum - print sha256 of file contents
+args = proc.argv()
+if count(args) < 2 {
+    print("usage: sha256sum FILE")
+} else {
+    path = args[1]
+    bytes = fs.read_bytes(path)
+    print(fmt("{}  {}", hash.sha256(bytes), path))
+}

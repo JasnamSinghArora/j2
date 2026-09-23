@@ -1,0 +1,32 @@
+# Elementwise zip ops: add, mul, sub, div.
+
+N = 20000
+a := make_seq(N, 0.0)
+b := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    a[i] = (i + 1) * 1.0
+    b[i] = (i + 2) * 1.0
+}
+
+t = time.now()
+add := make_seq(N, 0.0)
+mul := make_seq(N, 0.0)
+sub := make_seq(N, 0.0)
+div := make_seq(N, 0.0)
+for i in 0..(N - 1) {
+    add[i] = a[i] + b[i]
+    mul[i] = a[i] * b[i]
+    sub[i] = a[i] - b[i]
+    div[i] = a[i] / b[i]
+}
+ms = time.elapsed_ms(t)
+
+sa := 0.0
+sm := 0.0
+ss := 0.0
+sd := 0.0
+for v in add { sa += v }
+for v in mul { sm += v }
+for v in sub { ss += v }
+for v in div { sd += v }
+print(fmt("ML_ELEMWISE N={} ms={} add={} mul={} sub={} div={}", N, ms, sa, sm, ss, sd))

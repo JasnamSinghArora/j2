@@ -1,0 +1,24 @@
+# recursive index sum vs loop, asserted equal
+
+data = [3, 1, 4, 1, 5, 9, 2, 6]
+
+func rec_sum(s, i) = {
+    if i >= len(s) { give 0 }
+    give s[i] + rec_sum(s, i + 1)
+}
+
+func rec_max(s, i, best) = {
+    if i >= len(s) { give best }
+    cur := s[i]
+    if cur > best { give rec_max(s, i + 1, cur) }
+    give rec_max(s, i + 1, best)
+}
+
+acc := 0
+for v in data {
+    acc += v
+}
+
+print(fmt("rec_sum={} loop_sum={} match={}", rec_sum(data, 0), acc, rec_sum(data, 0) == acc))
+print(fmt("rec_max={} builtin_max={}", rec_max(data, 1, data[0]), max(data)))
+print(fmt("len={} first={} last={}", len(data), data[0], data[len(data) - 1]))

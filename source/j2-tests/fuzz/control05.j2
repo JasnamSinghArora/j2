@@ -1,0 +1,54 @@
+# skip (continue) and stop (break), conditional too
+
+# sum evens via `skip if odd`
+even_sum := 0
+for i in 1..10 {
+    if i % 2 == 1 {
+        skip
+    }
+    even_sum += i
+}
+# 2+4+6+8+10 = 30
+assert even_sum == 30, "skip odd"
+
+# `skip if <cond>` form
+non3 := 0
+for i in 1..10 {
+    skip if i % 3 == 0
+    non3 += i
+}
+# 1+2+4+5+7+8+10 = 37
+assert non3 == 37, "skip if multiple of 3"
+
+# stop unconditionally inside a guard
+stopped_at := 0
+for i in 1..100 {
+    if i > 5 {
+        stop
+    }
+    stopped_at = i
+}
+assert stopped_at == 5, "stop after 5"
+
+# `stop if <cond>` form.
+collected := 0
+for i in 1..100 {
+    stop if i * i > 20
+    collected += i
+}
+# 1+2+3+4 = 10, stops before adding 5
+assert collected == 10, "stop if square over 20"
+
+# stop and skip interleaved in one loop.
+mixed := 0
+for i in 1..20 {
+    skip if i % 2 == 0
+    stop if i > 11
+    mixed += i
+}
+# odd i until i>11, sum = 36
+assert mixed == 36, "skip evens then stop past 11"
+
+print(fmt("control05 even={} non3={} stop={} collected={} mixed={}",
+    even_sum, non3, stopped_at, collected, mixed))
+print("control05 PASS")

@@ -1,0 +1,8 @@
+# `.iter().sum()` equivalent in J2
+
+N = 4000000
+data = collect(1..N)
+t = time.now()
+s = sum(data)
+ms = time.elapsed_ms(t)
+print(fmt("ITER_SUM N={} sum={} ms={}", N, s, ms))

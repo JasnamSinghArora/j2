@@ -1,0 +1,68 @@
+# grid-search 4 learning rates, pick best
+
+N = 100
+D = 4
+ITERS = 8
+LRS = [0.001, 0.01, 0.05, 0.1]
+
+rand.seed(2024)
+
+# Synthesize data
+w_true := []
+for d in 0..(D - 1) { w_true += [rand.next_float() * 2.0 - 1.0] }
+x := []
+y := []
+for i in 0..(N - 1) {
+    acc := 0.0
+    for d in 0..(D - 1) {
+        xv = rand.next_float() * 2.0 - 1.0
+        x += [xv]
+        acc += xv * w_true[d]
+    }
+    y += [acc + (rand.next_float() - 0.5) * 0.02]
+}
+
+func fit_and_eval(lr) = {
+    w := []
+    for d in 0..(D - 1) { w += [0.0] }
+    for it in 0..ITERS {
+        grad := []
+        for d in 0..(D - 1) { grad += [0.0] }
+        for i in 0..(N - 1) {
+            yhat := 0.0
+            for d in 0..(D - 1) { yhat += x[i * D + d] * w[d] }
+            err = yhat - y[i]
+            for d in 0..(D - 1) {
+                grad[d] = grad[d] + err * x[i * D + d]
+            }
+        }
+        for d in 0..(D - 1) { w[d] = w[d] - lr * (grad[d] / N) }
+    }
+    # Compute final MSE
+    loss := 0.0
+    for i in 0..(N - 1) {
+        yhat := 0.0
+        for d in 0..(D - 1) { yhat += x[i * D + d] * w[d] }
+        err = yhat - y[i]
+        loss += err * err
+    }
+    loss / N
+}
+
+t = time.now()
+losses := []
+for lr in LRS {
+    losses += [fit_and_eval(lr)]
+}
+ms = time.elapsed_ms(t)
+
+best_lr := LRS[0]
+best_loss := losses[0]
+for i in 0..(count(LRS) - 1) {
+    if losses[i] < best_loss {
+        best_loss = losses[i]
+        best_lr = LRS[i]
+    }
+}
+print(fmt("ML_GRID_SEARCH N={} D={} models={} ms={} best_lr={} best_loss={}",
+    N, D, count(LRS), ms, best_lr, best_loss))
