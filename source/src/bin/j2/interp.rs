@@ -1,4 +1,4 @@
-//! Tree-walking J interpreter, falls back to compilation
+//! Tree-walking J2 interpreter, falls back to compilation
 
 use std::collections::HashMap;
 
@@ -7,7 +7,7 @@ use j2_runtime::error::J2Err;
 use j2_runtime::prelude::*;
 use j2_runtime::value::J2Value;
 
-/// Unsupported construct or genuine J runtime error
+/// Unsupported construct or genuine J2 runtime error
 pub enum IErr {
     Unsupported,
     J(J2Err),

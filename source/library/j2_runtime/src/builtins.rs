@@ -19,7 +19,7 @@ pub fn f64_to_i64(x: f64, who: &str) -> J2Result<i64> {
     }
 }
 
-// ------------------------- A -------------------------
+// A
 
 /// abs(x): absolute value of a number.
 pub fn abs(args: &[J2Value]) -> J2Result<J2Value> {
@@ -31,7 +31,7 @@ pub fn abs(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// ------------------------- C -------------------------
+// C
 
 pub fn ceil(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "ceil")?;
@@ -108,7 +108,7 @@ pub fn count(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// ------------------------- F -------------------------
+// F
 
 pub fn floor(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "floor")?;
@@ -145,7 +145,7 @@ pub fn fmt(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(out))
 }
 
-// ------------------------- I -------------------------
+// I
 
 pub fn input(args: &[J2Value]) -> J2Result<J2Value> {
     if !args.is_empty() {
@@ -160,7 +160,7 @@ pub fn input(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(s))
 }
 
-// ------------------------- J -------------------------
+// J
 
 pub fn join(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "join")?;
@@ -180,7 +180,7 @@ pub fn join(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// ------------------------- L -------------------------
+// L
 
 pub fn len(args: &[J2Value]) -> J2Result<J2Value> { count(args) }
 
@@ -189,7 +189,7 @@ pub fn lower(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(args[0].as_text()?.to_lowercase()))
 }
 
-// ------------------------- M -------------------------
+// M
 
 pub fn max(args: &[J2Value]) -> J2Result<J2Value> {
     // Binary form `max(a, b)`
@@ -245,7 +245,7 @@ pub fn clamp(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Float(x.max(lo).min(hi)))
 }
 
-// ------------------------- N -------------------------
+// N
 
 pub fn num(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "num")?;
@@ -256,7 +256,7 @@ pub fn num(args: &[J2Value]) -> J2Result<J2Value> {
     Err(J2Err::conversion(format!("{:?} cannot be converted to a number", s)))
 }
 
-// ------------------------- P -------------------------
+// P
 
 pub fn pow(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "pow")?;
@@ -272,7 +272,7 @@ pub fn print(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Null)
 }
 
-// ------------------------- R -------------------------
+// R
 
 /// In-place append, avoids O(N) `s += [x]`
 pub fn push(args: &[J2Value]) -> J2Result<J2Value> {
@@ -342,7 +342,7 @@ pub fn round(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Int(r))
 }
 
-// ------------------------- S -------------------------
+// S
 
 pub fn slice(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 3, "slice")?;
@@ -432,21 +432,21 @@ pub fn sum(args: &[J2Value]) -> J2Result<J2Value> {
     crate::parallel::sum_seq(&items)
 }
 
-// ------------------------- T -------------------------
+// T
 
 pub fn trim(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "trim")?;
     Ok(J2Value::text(args[0].as_text()?.trim().to_string()))
 }
 
-// ------------------------- U -------------------------
+// U
 
 pub fn upper(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "upper")?;
     Ok(J2Value::text(args[0].as_text()?.to_uppercase()))
 }
 
-// ------------------------- helpers -------------------------
+// helpers
 
 fn arity(args: &[J2Value], expected: usize, name: &str) -> J2Result<()> {
     if args.len() != expected {
@@ -474,7 +474,7 @@ pub(crate) fn collect_finite_items(v: &J2Value, who: &str) -> J2Result<Vec<J2Val
     }
 }
 
-// ------------------------- extended (post-spec) -------------------------
+// extended (post-spec)
 
 /// type(x), runtime type name as text
 pub fn type_of(args: &[J2Value]) -> J2Result<J2Value> {

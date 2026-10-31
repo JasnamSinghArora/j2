@@ -5,7 +5,7 @@ class J2 < Formula
   version "0.1.0"
   url "https://github.com/JasnamSinghArora/j2/releases/download/v#{version}/j2-#{version}-aarch64-apple-darwin.tar.gz"
   sha256 "6fda8338791730cf7937362acd03e29247719e65785458e62988e1789c842e75"
-  license any_of: ["MIT", "Apache-2.0"]
+  license "MIT"
 
   def install
     # The bundle is self-contained (toolchain + vendored deps + runtime); the

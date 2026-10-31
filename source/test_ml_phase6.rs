@@ -1,4 +1,4 @@
-// Phase 6, zip-div-write, abs-diff, FMA-write matchers
+// zip-div-write, abs-diff, FMA-write matchers
 
 use std::hint::black_box;
 use std::time::Instant;

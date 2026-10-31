@@ -1,13 +1,12 @@
-//! CHANGED BY JAYITHI GAVVA: CFG/post-dominator/CDG analysis module
+//! Control-flow, post-dominator, and control-dependence analysis.
+//! Original implementation by Jayithi Gavva.
 
-// CHANGED BY JAYITHI GAVVA: analysis imports
 use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::mir::{BasicBlock, Body, START_BLOCK, TerminatorKind};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-// CHANGED BY JAYITHI GAVVA: CfgNode adds EXIT
 /// CFG node, basic block or EXIT
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum CfgNode {
@@ -18,7 +17,7 @@ pub enum CfgNode {
 }
 
 impl CfgNode {
-    // CHANGED BY JAYITHI GAVVA: block unless EXIT
+
     pub fn as_block(&self) -> Option<BasicBlock> {
         match self {
             CfgNode::Block(bb) => Some(*bb),
@@ -26,7 +25,6 @@ impl CfgNode {
         }
     }
 
-    // CHANGED BY JAYITHI GAVVA: is EXIT node
     pub fn is_exit(&self) -> bool {
         matches!(self, CfgNode::Exit)
     }
@@ -47,7 +45,6 @@ impl From<BasicBlock> for CfgNode {
     }
 }
 
-// CHANGED BY JAYITHI GAVVA: CFG edge classification
 /// CFG edge classification by terminator type
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum EdgeKind {
@@ -79,7 +76,6 @@ pub enum EdgeKind {
     Other,
 }
 
-// CHANGED BY JAYITHI GAVVA: edge with metadata
 /// CFG edge with source, target, kind
 #[derive(Clone, Debug)]
 pub struct CfgEdge {
@@ -88,12 +84,11 @@ pub struct CfgEdge {
     pub kind: EdgeKind,
 }
 
-// CHANGED BY JAYITHI GAVVA: Added ControlFlowGraph struct
 /// Control Flow Graph representation using adjacency lists
 #[derive(Clone, Debug)]
 pub struct ControlFlowGraph {
     /// Number of basic blocks (not including EXIT)
-    // CHANGED BY JAYITHI GAVVA: underscore silences unused
+
     _num_blocks: usize,
     /// Forward edges, node to (successor, kind)
     successors: BTreeMap<CfgNode, SmallVec<[(CfgNode, EdgeKind); 2]>>,
@@ -104,7 +99,7 @@ pub struct ControlFlowGraph {
 }
 
 impl ControlFlowGraph {
-    // CHANGED BY JAYITHI GAVVA: build from MIR
+
     /// Build a CFG from a MIR Body
     pub fn build<'tcx>(body: &Body<'tcx>) -> Self {
         let num_blocks = body.basic_blocks.len();
@@ -112,7 +107,6 @@ impl ControlFlowGraph {
         let mut predecessors: BTreeMap<CfgNode, SmallVec<[(CfgNode, EdgeKind); 4]>> =
             BTreeMap::new();
 
-        // CHANGED BY JAYITHI GAVVA: nodes plus EXIT
         let mut nodes: Vec<CfgNode> =
             (0..num_blocks).map(|i| CfgNode::Block(BasicBlock::from_usize(i))).collect();
         nodes.push(CfgNode::Exit);
@@ -123,7 +117,6 @@ impl ControlFlowGraph {
             predecessors.entry(*node).or_default();
         }
 
-        // CHANGED BY JAYITHI GAVVA: edges from terminators
         for (bb_idx, bb_data) in body.basic_blocks.iter_enumerated() {
             let from_node = CfgNode::Block(bb_idx);
 
@@ -140,7 +133,6 @@ impl ControlFlowGraph {
         ControlFlowGraph { _num_blocks: num_blocks, successors, predecessors, nodes }
     }
 
-    // CHANGED BY JAYITHI GAVVA: edges per terminator
     fn add_edges_from_terminator(
         from: CfgNode,
         kind: &TerminatorKind<'_>,
@@ -148,14 +140,13 @@ impl ControlFlowGraph {
         predecessors: &mut BTreeMap<CfgNode, SmallVec<[(CfgNode, EdgeKind); 4]>>,
     ) {
         match kind {
-            // CHANGED BY JAYITHI GAVVA: Handle goto terminator
+
             TerminatorKind::Goto { target } => {
                 let to = CfgNode::Block(*target);
                 successors.entry(from).or_default().push((to, EdgeKind::Goto));
                 predecessors.entry(to).or_default().push((from, EdgeKind::Goto));
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle switchInt terminator
             TerminatorKind::SwitchInt { targets, .. } => {
                 // Add edges for each value-target pair
                 for (value, target) in targets.iter() {
@@ -172,7 +163,6 @@ impl ControlFlowGraph {
                 predecessors.entry(to).or_default().push((from, edge_kind));
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle assert terminator
             TerminatorKind::Assert { target, unwind, .. } => {
                 let to = CfgNode::Block(*target);
                 successors.entry(from).or_default().push((to, EdgeKind::AssertSuccess));
@@ -186,14 +176,12 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: Return to EXIT
             TerminatorKind::Return => {
                 let to = CfgNode::Exit;
                 successors.entry(from).or_default().push((to, EdgeKind::Return));
                 predecessors.entry(to).or_default().push((from, EdgeKind::Return));
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle call terminator
             TerminatorKind::Call { target, unwind, .. } => {
                 if let Some(target_bb) = target {
                     let to = CfgNode::Block(*target_bb);
@@ -215,7 +203,6 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle drop terminator
             TerminatorKind::Drop { target, unwind, .. } => {
                 let to = CfgNode::Block(*target);
                 successors.entry(from).or_default().push((to, EdgeKind::Drop));
@@ -228,7 +215,6 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle yield terminator
             TerminatorKind::Yield { resume, drop, .. } => {
                 let to = CfgNode::Block(*resume);
                 successors.entry(from).or_default().push((to, EdgeKind::Yield));
@@ -241,7 +227,6 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle inline assembly
             TerminatorKind::InlineAsm { targets, unwind, .. } => {
                 for target in targets.iter() {
                     let to = CfgNode::Block(*target);
@@ -256,7 +241,6 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: FalseEdge (borrowck artifact)
             TerminatorKind::FalseEdge { real_target, imaginary_target } => {
                 let real_to = CfgNode::Block(*real_target);
                 successors.entry(from).or_default().push((real_to, EdgeKind::FalseEdge));
@@ -267,7 +251,6 @@ impl ControlFlowGraph {
                 predecessors.entry(imag_to).or_default().push((from, EdgeKind::FalseEdge));
             }
 
-            // CHANGED BY JAYITHI GAVVA: Handle false unwind
             TerminatorKind::FalseUnwind { real_target, unwind } => {
                 let to = CfgNode::Block(*real_target);
                 successors.entry(from).or_default().push((to, EdgeKind::FalseUnwind));
@@ -280,7 +263,6 @@ impl ControlFlowGraph {
                 }
             }
 
-            // CHANGED BY JAYITHI GAVVA: terminators reaching EXIT
             TerminatorKind::UnwindResume
             | TerminatorKind::UnwindTerminate(_)
             | TerminatorKind::Unreachable
@@ -292,42 +274,34 @@ impl ControlFlowGraph {
         }
     }
 
-    // CHANGED BY JAYITHI GAVVA: all CFG nodes
     pub fn nodes(&self) -> &[CfgNode] {
         &self.nodes
     }
 
-    // CHANGED BY JAYITHI GAVVA: node successors
     pub fn successors(&self, node: CfgNode) -> impl Iterator<Item = (CfgNode, EdgeKind)> + '_ {
         self.successors.get(&node).map(|v| v.iter().copied()).into_iter().flatten()
     }
 
-    // CHANGED BY JAYITHI GAVVA: node predecessors
     pub fn predecessors(&self, node: CfgNode) -> impl Iterator<Item = (CfgNode, EdgeKind)> + '_ {
         self.predecessors.get(&node).map(|v| v.iter().copied()).into_iter().flatten()
     }
 
-    // CHANGED BY JAYITHI GAVVA: successor count
     pub fn num_successors(&self, node: CfgNode) -> usize {
         self.successors.get(&node).map(|v| v.len()).unwrap_or(0)
     }
 
-    // CHANGED BY JAYITHI GAVVA: branch point check
     pub fn is_branch(&self, node: CfgNode) -> bool {
         self.num_successors(node) > 1
     }
 
-    // CHANGED BY JAYITHI GAVVA: entry is START_BLOCK
     pub fn entry(&self) -> CfgNode {
         CfgNode::Block(START_BLOCK)
     }
 
-    // CHANGED BY JAYITHI GAVVA: exit node
     pub fn exit(&self) -> CfgNode {
         CfgNode::Exit
     }
 
-    // CHANGED BY JAYITHI GAVVA: all CFG edges
     pub fn edges(&self) -> Vec<CfgEdge> {
         let mut edges = Vec::new();
         for (&from, succs) in &self.successors {
@@ -338,7 +312,6 @@ impl ControlFlowGraph {
         edges
     }
 
-    // CHANGED BY JAYITHI GAVVA: reverse postorder
     pub fn reverse_postorder(&self) -> Vec<CfgNode> {
         let mut visited = FxHashSet::default();
         let mut postorder = Vec::new();
@@ -365,7 +338,6 @@ impl ControlFlowGraph {
         postorder
     }
 
-    // CHANGED BY JAYITHI GAVVA: RPO for post-dominators
     pub fn reverse_postorder_from_exit(&self) -> Vec<CfgNode> {
         let mut visited = FxHashSet::default();
         let mut postorder = Vec::new();
@@ -393,7 +365,6 @@ impl ControlFlowGraph {
     }
 }
 
-// CHANGED BY JAYITHI GAVVA: Added PostDominatorTree struct
 /// Post-dominator tree computed from the CFG
 #[derive(Clone, Debug)]
 pub struct PostDominatorTree {
@@ -406,13 +377,12 @@ pub struct PostDominatorTree {
 }
 
 impl PostDominatorTree {
-    // CHANGED BY JAYITHI GAVVA: iterative post-dominators
+
     /// Compute post-dominator analysis for the given CFG
     pub fn compute(cfg: &ControlFlowGraph) -> Self {
         let all_nodes: BTreeSet<CfgNode> = cfg.nodes().iter().copied().collect();
         let mut postdom_sets: BTreeMap<CfgNode, BTreeSet<CfgNode>> = BTreeMap::new();
 
-        // CHANGED BY JAYITHI GAVVA: EXIT post-dominates itself
         postdom_sets.insert(CfgNode::Exit, {
             let mut s = BTreeSet::new();
             s.insert(CfgNode::Exit);
@@ -426,7 +396,6 @@ impl PostDominatorTree {
             }
         }
 
-        // CHANGED BY JAYITHI GAVVA: iterate to fixpoint
         let rpo = cfg.reverse_postorder_from_exit();
         let mut changed = true;
 
@@ -438,14 +407,14 @@ impl PostDominatorTree {
                     continue;
                 }
 
-                // PDOM[n] = {n} ∪ ∩{PDOM[s]
+                // PDOM[n] = {n} union the intersection of PDOM[s] for each successor s.
                 let mut new_postdom: Option<BTreeSet<CfgNode>> = None;
 
                 for (succ, _) in cfg.successors(node) {
                     if let Some(succ_postdom) = postdom_sets.get(&succ) {
                         match &mut new_postdom {
                             None => new_postdom = Some(succ_postdom.clone()),
-                            // CHANGED BY JAYITHI GAVVA: 2024 edition match
+
                             Some(current) => {
                                 *current = current.intersection(succ_postdom).copied().collect();
                             }
@@ -463,7 +432,6 @@ impl PostDominatorTree {
             }
         }
 
-        // CHANGED BY JAYITHI GAVVA: Compute immediate post-dominators
         let mut ipostdom: BTreeMap<CfgNode, Option<CfgNode>> = BTreeMap::new();
         ipostdom.insert(CfgNode::Exit, None);
 
@@ -490,7 +458,6 @@ impl PostDominatorTree {
             }
         }
 
-        // CHANGED BY JAYITHI GAVVA: post-dominator tree children
         let mut children: BTreeMap<CfgNode, Vec<CfgNode>> = BTreeMap::new();
         for node in cfg.nodes() {
             children.insert(*node, Vec::new());
@@ -505,33 +472,27 @@ impl PostDominatorTree {
         PostDominatorTree { ipostdom, postdom_sets, children }
     }
 
-    // CHANGED BY JAYITHI GAVVA: Get immediate post-dominator
     pub fn immediate_postdominator(&self, node: CfgNode) -> Option<CfgNode> {
         self.ipostdom.get(&node).copied().flatten()
     }
 
-    // CHANGED BY JAYITHI GAVVA: full post-dominator set
     pub fn postdominators(&self, node: CfgNode) -> Option<&BTreeSet<CfgNode>> {
         self.postdom_sets.get(&node)
     }
 
-    // CHANGED BY JAYITHI GAVVA: post-dominance check
     pub fn postdominates(&self, dominator: CfgNode, dominated: CfgNode) -> bool {
         self.postdom_sets.get(&dominated).map(|set| set.contains(&dominator)).unwrap_or(false)
     }
 
-    // CHANGED BY JAYITHI GAVVA: tree children
     pub fn children(&self, node: CfgNode) -> &[CfgNode] {
         self.children.get(&node).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    // CHANGED BY JAYITHI GAVVA: iterate ipdom pairs
     pub fn iter_ipostdom(&self) -> impl Iterator<Item = (CfgNode, Option<CfgNode>)> + '_ {
         self.ipostdom.iter().map(|(&n, &ipdom)| (n, ipdom))
     }
 }
 
-// CHANGED BY JAYITHI GAVVA: Added ControlDependenceEdge struct
 /// An edge in the Control Dependence Graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ControlDependenceEdge {
@@ -543,7 +504,6 @@ pub struct ControlDependenceEdge {
     pub label: EdgeKind,
 }
 
-// CHANGED BY JAYITHI GAVVA: Added ControlDependenceGraph struct
 /// Control Dependence Graph computed using Ferrante-Ottenstein-Warren algorithm
 #[derive(Clone, Debug)]
 pub struct ControlDependenceGraph {
@@ -556,20 +516,18 @@ pub struct ControlDependenceGraph {
 }
 
 impl ControlDependenceGraph {
-    // CHANGED BY JAYITHI GAVVA: Ferrante-Ottenstein-Warren CDG
+
     /// Build CDG (Ferrante-Ottenstein-Warren) walking post-dominator tree
     pub fn build(cfg: &ControlFlowGraph, pdt: &PostDominatorTree) -> Self {
         let mut dependences: BTreeMap<CfgNode, Vec<(CfgNode, EdgeKind)>> = BTreeMap::new();
         let mut controlled_by: BTreeMap<CfgNode, Vec<(CfgNode, EdgeKind)>> = BTreeMap::new();
         let mut edges: Vec<ControlDependenceEdge> = Vec::new();
 
-        // CHANGED BY JAYITHI GAVVA: init empty mappings
         for node in cfg.nodes() {
             dependences.insert(*node, Vec::new());
             controlled_by.insert(*node, Vec::new());
         }
 
-        // CHANGED BY JAYITHI GAVVA: process CFG edges
         for edge in cfg.edges() {
             let a = edge.from; // Source of CFG edge
             let b = edge.to; // Target of CFG edge
@@ -579,7 +537,6 @@ impl ControlDependenceGraph {
                 continue;
             }
 
-            // CHANGED BY JAYITHI GAVVA: walk to ipdom(A)
             let ipdom_a = pdt.immediate_postdominator(a);
 
             let mut current = Some(b);
@@ -589,7 +546,6 @@ impl ControlDependenceGraph {
                     break;
                 }
 
-                // CHANGED BY JAYITHI GAVVA: add CD edge
                 let cd_edge =
                     ControlDependenceEdge { controller: a, dependent: node, label: edge.kind };
 
@@ -607,7 +563,6 @@ impl ControlDependenceGraph {
         ControlDependenceGraph { dependences, controlled_by, edges }
     }
 
-    // CHANGED BY JAYITHI GAVVA: node's controllers
     pub fn control_dependences(
         &self,
         node: CfgNode,
@@ -615,7 +570,6 @@ impl ControlDependenceGraph {
         self.dependences.get(&node).map(|v| v.iter().copied()).into_iter().flatten()
     }
 
-    // CHANGED BY JAYITHI GAVVA: nodes controlled by
     pub fn controlled_nodes(
         &self,
         controller: CfgNode,
@@ -623,12 +577,10 @@ impl ControlDependenceGraph {
         self.controlled_by.get(&controller).map(|v| v.iter().copied()).into_iter().flatten()
     }
 
-    // CHANGED BY JAYITHI GAVVA: all CD edges
     pub fn edges(&self) -> &[ControlDependenceEdge] {
         &self.edges
     }
 
-    // CHANGED BY JAYITHI GAVVA: control-dependence check
     pub fn is_control_dependent(&self, dependent: CfgNode, controller: CfgNode) -> bool {
         self.dependences
             .get(&dependent)
@@ -637,7 +589,6 @@ impl ControlDependenceGraph {
     }
 }
 
-// CHANGED BY JAYITHI GAVVA: bundles all analyses
 /// All control flow analyses for a function
 pub struct ControlFlowAnalysis {
     pub cfg: ControlFlowGraph,
@@ -646,7 +597,7 @@ pub struct ControlFlowAnalysis {
 }
 
 impl ControlFlowAnalysis {
-    // CHANGED BY JAYITHI GAVVA: run all analyses
+
     pub fn analyze<'tcx>(body: &Body<'tcx>) -> Self {
         let cfg = ControlFlowGraph::build(body);
         let post_dominator_tree = PostDominatorTree::compute(&cfg);
@@ -656,12 +607,10 @@ impl ControlFlowAnalysis {
     }
 }
 
-// CHANGED BY JAYITHI GAVVA: debug printers
 /// Debug printing utilities for CFG and CDG.
 pub mod debug {
     use super::*;
 
-    // CHANGED BY JAYITHI GAVVA: Print CFG edges
     /// Print all CFG edges
     pub fn print_cfg(cfg: &ControlFlowGraph) {
         println!("=== Control Flow Graph ===");
@@ -673,7 +622,6 @@ pub mod debug {
         println!();
     }
 
-    // CHANGED BY JAYITHI GAVVA: CFG adjacency list
     /// Print CFG as adjacency list
     pub fn print_cfg_adjacency(cfg: &ControlFlowGraph) {
         println!("=== CFG Adjacency List ===");
@@ -685,7 +633,6 @@ pub mod debug {
         println!();
     }
 
-    // CHANGED BY JAYITHI GAVVA: Print post-dominator information
     /// Print post-dominator tree and sets.
     pub fn print_post_dominators(pdt: &PostDominatorTree) {
         println!("=== Post-Dominator Analysis ===");
@@ -706,7 +653,6 @@ pub mod debug {
         println!();
     }
 
-    // CHANGED BY JAYITHI GAVVA: Print CDG edges
     /// Print all CDG edges
     pub fn print_cdg(cdg: &ControlDependenceGraph) {
         println!("=== Control Dependence Graph ===");
@@ -720,7 +666,6 @@ pub mod debug {
         println!();
     }
 
-    // CHANGED BY JAYITHI GAVVA: CDG dependence list
     /// Print each node's controllers
     pub fn print_cdg_dependences(cdg: &ControlDependenceGraph, cfg: &ControlFlowGraph) {
         println!("=== Control Dependences (node -> controllers) ===");
@@ -734,7 +679,6 @@ pub mod debug {
         println!();
     }
 
-    // CHANGED BY JAYITHI GAVVA: full analysis summary
     /// Print summary of all analyses
     pub fn print_analysis(analysis: &ControlFlowAnalysis) {
         print_cfg(&analysis.cfg);
@@ -744,7 +688,6 @@ pub mod debug {
         print_cdg_dependences(&analysis.cdg, &analysis.cfg);
     }
 
-    // CHANGED BY JAYITHI GAVVA: CFG to string
     /// Format CFG edges as a string.
     pub fn cfg_to_string(cfg: &ControlFlowGraph) -> String {
         let mut result = String::new();
@@ -755,7 +698,6 @@ pub mod debug {
         result
     }
 
-    // CHANGED BY JAYITHI GAVVA: CDG to string
     /// Format CDG edges as a string.
     pub fn cdg_to_string(cdg: &ControlDependenceGraph) -> String {
         let mut result = String::new();
@@ -769,7 +711,6 @@ pub mod debug {
         result
     }
 
-    // CHANGED BY JAYITHI GAVVA: CFG as DOT
     /// CFG in Graphviz DOT format
     pub fn cfg_to_dot(cfg: &ControlFlowGraph) -> String {
         let mut dot = String::new();
@@ -779,13 +720,11 @@ pub mod debug {
         dot.push_str("    node [shape=box, style=filled];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: style entry/exit
         dot.push_str("    // Node styling\n");
         dot.push_str("    bb0 [label=\"bb0\\n(ENTRY)\", fillcolor=lightgreen];\n");
         dot.push_str("    EXIT [label=\"EXIT\", fillcolor=lightcoral, shape=ellipse];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: labeled edges
         dot.push_str("    // Edges\n");
         for edge in cfg.edges() {
             let from_str = match edge.from {
@@ -797,7 +736,6 @@ pub mod debug {
                 CfgNode::Exit => "EXIT".to_string(),
             };
 
-            // CHANGED BY JAYITHI GAVVA: color by kind
             let (color, label) = match edge.kind {
                 EdgeKind::Goto => ("black", "goto"),
                 EdgeKind::SwitchInt(Some(_v)) => ("blue", "switch"),
@@ -825,7 +763,6 @@ pub mod debug {
         dot
     }
 
-    // CHANGED BY JAYITHI GAVVA: PDT as DOT
     /// Generate Post-Dominator Tree in Graphviz DOT format.
     pub fn pdt_to_dot(pdt: &PostDominatorTree, _cfg: &ControlFlowGraph) -> String {
         let mut dot = String::new();
@@ -837,11 +774,9 @@ pub mod debug {
         dot.push_str("    node [shape=box, style=filled, fillcolor=lightyellow];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: Style EXIT node
         dot.push_str("    EXIT [label=\"EXIT\\n(root)\", fillcolor=lightcoral, shape=ellipse];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: ipdom edges
         dot.push_str("    // Edges (node -> immediate post-dominator)\n");
         for (node, ipdom) in pdt.iter_ipostdom() {
             if let Some(parent) = ipdom {
@@ -861,7 +796,6 @@ pub mod debug {
         dot
     }
 
-    // CHANGED BY JAYITHI GAVVA: CDG as DOT
     /// CDG in Graphviz DOT format
     pub fn cdg_to_dot(cdg: &ControlDependenceGraph, _cfg: &ControlFlowGraph) -> String {
         let mut dot = String::new();
@@ -873,12 +807,10 @@ pub mod debug {
         dot.push_str("    node [shape=box, style=filled, fillcolor=lightblue];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: Style special nodes
         dot.push_str("    bb0 [label=\"bb0\\n(ENTRY)\", fillcolor=lightgreen];\n");
         dot.push_str("    EXIT [label=\"EXIT\", fillcolor=lightcoral, shape=ellipse];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: CD edges
         dot.push_str("    // Control Dependence Edges (controller -> dependent)\n");
         for edge in cdg.edges() {
             let controller_str = match edge.controller {
@@ -908,7 +840,6 @@ pub mod debug {
         dot
     }
 
-    // CHANGED BY JAYITHI GAVVA: save all DOTs
     /// Write cfg.dot, pdt.dot, cdg.dot to directory
     pub fn save_all_graphs_to_dot(
         analysis: &ControlFlowAnalysis,
@@ -917,22 +848,18 @@ pub mod debug {
         use std::fs;
         use std::io::Write;
 
-        // CHANGED BY JAYITHI GAVVA: ensure output dir
         fs::create_dir_all(output_dir)?;
 
-        // CHANGED BY JAYITHI GAVVA: Write CFG
         let cfg_path = output_dir.join("cfg.dot");
         let mut cfg_file = fs::File::create(&cfg_path)?;
         cfg_file.write_all(cfg_to_dot(&analysis.cfg).as_bytes())?;
         println!("Wrote CFG to: {}", cfg_path.display());
 
-        // CHANGED BY JAYITHI GAVVA: Write PDT
         let pdt_path = output_dir.join("pdt.dot");
         let mut pdt_file = fs::File::create(&pdt_path)?;
         pdt_file.write_all(pdt_to_dot(&analysis.post_dominator_tree, &analysis.cfg).as_bytes())?;
         println!("Wrote Post-Dominator Tree to: {}", pdt_path.display());
 
-        // CHANGED BY JAYITHI GAVVA: Write CDG
         let cdg_path = output_dir.join("cdg.dot");
         let mut cdg_file = fs::File::create(&cdg_path)?;
         cdg_file.write_all(cdg_to_dot(&analysis.cdg, &analysis.cfg).as_bytes())?;
@@ -941,8 +868,7 @@ pub mod debug {
         Ok(())
     }
 
-    // CHANGED BY JAYITHI GAVVA: CFG+CDG overlay
-    /// Generate a combined graph showing both CFG
+    /// Generate a graph with CFG edges and control-dependence edges.
     pub fn combined_cfg_cdg_to_dot(cfg: &ControlFlowGraph, cdg: &ControlDependenceGraph) -> String {
         let mut dot = String::new();
         dot.push_str("digraph Combined_CFG_CDG {\n");
@@ -951,12 +877,10 @@ pub mod debug {
         dot.push_str("    node [shape=box, style=filled, fillcolor=lightyellow];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: Style special nodes
         dot.push_str("    bb0 [label=\"bb0\\n(ENTRY)\", fillcolor=lightgreen];\n");
         dot.push_str("    EXIT [label=\"EXIT\", fillcolor=lightcoral, shape=ellipse];\n");
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: solid CFG edges
         dot.push_str("    // CFG Edges (solid)\n");
         for edge in cfg.edges() {
             let from_str = match edge.from {
@@ -972,7 +896,6 @@ pub mod debug {
 
         dot.push_str("\n");
 
-        // CHANGED BY JAYITHI GAVVA: dashed CDG edges
         dot.push_str("    // CDG Edges (dashed red)\n");
         for edge in cdg.edges() {
             let controller_str = match edge.controller {
@@ -997,8 +920,6 @@ pub mod debug {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // CHANGED BY JAYITHI GAVVA: unit tests
 
     #[test]
     fn test_cfg_node_display() {

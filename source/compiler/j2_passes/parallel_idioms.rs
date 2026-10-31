@@ -1,6 +1,6 @@
-// FILE CREATED BY JASNAM
+// Original implementation by Jasnam Singh Arora.
 
-// This is an experimental matcher module
+// Experimental MIR pattern matching for automatic parallelism.
 #![allow(dead_code, unused_variables, unused_assignments)]
 
 use rustc_middle::mir;
@@ -93,7 +93,7 @@ pub(crate) fn detect_idioms<'tcx>(
     }
 
     for lp in &loops {
-        // reductions kept; map to `parallel_reduce_*`, measured 7x
+        // Detect reductions that can use the `parallel_reduce_*` helpers.
         detect_reductions_in_loop(body, lp, &mut findings);
         detect_reductions_via_call(tcx, body, lp, &mut findings);
 
@@ -137,7 +137,7 @@ pub(crate) fn detect_idioms<'tcx>(
     findings
 }
 
-// ── Loop detection ───────────────────────────────────────────────────
+// Loop detection
 
 /// Header plus confidently attributed body blocks
 #[derive(Debug)]
@@ -173,7 +173,7 @@ fn find_simple_loops<'tcx>(body: &mir::Body<'tcx>) -> Vec<SimpleLoop> {
     loops
 }
 
-// ── Reduction detection ──────────────────────────────────────────────
+// Reduction detection
 
 /// Associative+commutative ops the reduce primitives can split
 fn is_associative_commutative(op: mir::BinOp) -> bool {
@@ -385,7 +385,7 @@ fn detect_reductions_via_call<'tcx>(
     }
 }
 
-// ── Privatizable detection ───────────────────────────────────────────
+// Privatizable detection
 
 /// Privatizable Local, written before read each iteration
 fn detect_privatizable_in_loop<'tcx>(
@@ -472,7 +472,7 @@ fn visit_rvalue_locals<'tcx, F: FnMut(mir::Local)>(
     }
 }
 
-// ── Induction detection ──────────────────────────────────────────────
+// Induction detection
 
 /// Induction var updated only by constant Add
 fn detect_induction_in_loop<'tcx>(
@@ -708,7 +708,7 @@ fn detect_induction_via_call<'tcx>(
     }
 }
 
-// REDUCTION TRANSFORMATION ───────────────────────────────────────── Goal
+// Reduction transformation
 
 use rustc_middle::ty::{self};
 use rustc_span::Symbol;
@@ -1071,7 +1071,7 @@ pub(crate) fn try_transform_reductions<'tcx>(
     count
 }
 
-// Phase 4, rewrite `.sum()`/`.product()` to slice helpers
+// rewrite `.sum()`/`.product()` to slice helpers
 pub(crate) fn try_transform_iterator_methods<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut mir::Body<'tcx>,
@@ -1364,7 +1364,7 @@ pub(crate) fn try_transform_iterator_methods<'tcx>(
     count
 }
 
-/// Recognises the 3-block chain bb_iter
+/// Match slice iteration, map, and reduction across three basic blocks.
 fn try_transform_map_iterator_methods<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut mir::Body<'tcx>,
@@ -2667,7 +2667,7 @@ pub(crate) fn try_transform_iterator_combinators<'tcx>(
     count
 }
 
-// Phase A.1/D.1, slice iter/iter_mut for_each matcher
+// slice iter/iter_mut for_each matcher
 
 // generic-T fallback for_each/filter-count, runs after typed matchers
 
@@ -3610,9 +3610,9 @@ pub(crate) fn try_transform_iterator_for_each<'tcx>(
     count
 }
 
-// Phase A.2, range/slice map-collect into Vec<T>
+// range/slice map-collect into Vec<T>
 
-// Phase C, HashMap iter().for_each() matcher (BTreeMap later)
+// HashMap iter().for_each() matcher (BTreeMap later)
 pub(crate) fn try_transform_hashmap_for_each<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut mir::Body<'tcx>,
@@ -4159,7 +4159,7 @@ pub(crate) fn try_transform_iterator_collect<'tcx>(
         if !c_arg_ok { continue }
 
         if let Some((end_op, tag)) = range_info {
-            // Range helpers all take `start
+            // Range helpers require u64 bounds; the start is supplied during lowering.
             if tag != AccTyTag::U64 { continue }
             plans.push(Plan {
                 kind: CollectKind::Range { end_op, elem_tag: target_tag },
@@ -6019,7 +6019,7 @@ fn analyze_slice_loop_for_transform<'tcx>(
 
     // arg Local accepted, type check below verifies
 
-    // verify &[u64]; Phase 1 handles u64 only
+    // Only &[u64] is supported by this matcher.
     let slice_ty = body.local_decls[slice_local].ty;
     if !is_ref_slice_u64(tcx, slice_ty) {
         // extra entry-block hop for reborrow temps
@@ -12282,7 +12282,7 @@ fn analyze_loop_for_transform<'tcx>(
         reject!("no out-of-loop predecessor (entry) found for header");
     };
 
-    // Header must terminate with `switchInt(_cmp) -> [false
+    // The header must branch on a comparison with an exit outside the loop.
     let header_term = body.basic_blocks[header].terminator();
     let (cmp_local, exit_bb) = match &header_term.kind {
         mir::TerminatorKind::SwitchInt { discr, targets } => {

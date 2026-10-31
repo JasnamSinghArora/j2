@@ -1,4 +1,4 @@
-// J -> backend source lowering
+// J2 to backend source lowering
 
 use crate::ast::*;
 use crate::typeck::{self, Borrow, FnSig, NativeFns};
@@ -154,7 +154,7 @@ fn is_copy_ty(t: &Ty) -> bool {
     matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Nil)
 }
 
-/// Whether every `Ty::Class(n)` mentioned
+/// Whether all class names in this type resolve to native classes.
 fn class_refs_resolved(ty: &Ty, classes: &Classes) -> bool {
     match ty {
         Ty::Class(n) => classes.contains_key(n),
@@ -280,7 +280,7 @@ fn normalize_class_types(prog: &Program) -> Program {
     out
 }
 
-/// Lookup a top-level function's
+/// Look up a top-level function's parameters, body, and type parameters.
 fn find_fn_def<'a>(prog: &'a Program, name: &str) -> Option<(&'a [Param], &'a FuncBody, &'a [String])> {
     prog.items.iter().find_map(|s| match s {
         Stmt::Func { name: n, params, body, type_params, .. } if n == name => {
@@ -852,7 +852,7 @@ fn box_value(ty: &Ty, code: &str) -> Option<String> {
     })
 }
 
-// ------------------------------ statements ------------------------------
+// statements
 
 fn lower_stmt_top(stmt: &Stmt, out: &mut String, depth: usize) {
     let ind = "    ".repeat(depth);
@@ -1213,7 +1213,7 @@ fn lower_lambda_expr(params: &[Param], body: &FuncBody) -> String {
     s
 }
 
-// ------------------------------ expressions ------------------------------
+// expressions
 
 fn lower_expr(e: &Expr) -> String {
     match e {
@@ -1391,7 +1391,7 @@ fn lower_expr(e: &Expr) -> String {
     }
 }
 
-// native lowering ============================== The typed subset
+// Native lowering for the typed subset
 
 /// native fn items plus boxing shim
 struct NativeEmit {
@@ -1434,7 +1434,7 @@ struct NCtx<'a> {
     /// seq bindings borrowable as `&mut [T]`
     mut_seqs: HashSet<String>,
     fns: &'a NativeFns,
-    /// Generic functions whose *both* monomorphizations
+    /// Generic functions whose integer and float monomorphizations both lower.
     safe_gen: &'a HashSet<String>,
     /// type of `_` in cond-lambda, else `None`
     underscore: Option<Ty>,
@@ -1444,7 +1444,7 @@ struct NCtx<'a> {
     classes: &'a Classes,
     /// enclosing class; bare field names become `self.field`
     self_fields: Option<&'a ClassSig>,
-    /// True inside a `:=`
+    /// True inside a mutating (`:=`) method.
     self_mut: bool,
     ret: Ty,
     /// hoisted loop-invariant lets; MIR matchers need `Operand::Copy`
@@ -3487,9 +3487,9 @@ fn fmt_f64(x: f64) -> String {
     format!("{}f64", x)
 }
 
-// ------------------------------ runtime preamble ------------------------------
+// runtime preamble
 
-/// Preamble prepended to every transpiled J program
+/// Preamble prepended to every transpiled J2 program
 pub const PREAMBLE: &str = r###"
 use j2_runtime::prelude::*;
 use j2_runtime::value::{J2Value, J2Func, J2FuncClause};

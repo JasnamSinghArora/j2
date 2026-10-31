@@ -1,4 +1,4 @@
-// J lexer; token set per spec 2.7/2.8
+// J2 lexer; token set per spec 2.7/2.8
 
 use crate::error::J2Error;
 
@@ -85,7 +85,7 @@ pub enum Tok {
     Caret,      // ^
     Tilde,      // ~
     Shl,        // <<
-    // (Shr / >> is shared with PipePipe
+    // Shr / >> shares a token with PipePipe.
     LParen,
     RParen,
     LBracket,
@@ -275,7 +275,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, J2Error> {
             }
         }
 
-        // Two-/three-character operators come first to avoid e.g
+        // Match longer operators before their single-character prefixes.
         let two = if i + 1 < chars.len() { Some((chars[i], chars[i + 1])) } else { None };
         if let Some((a, b)) = two {
             let tk = match (a, b) {

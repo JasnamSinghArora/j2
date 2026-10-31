@@ -6,7 +6,7 @@ const DEFAULT_GREEN: u32 = 7;
 const DEFAULT_YELLOW: u32 = 2;
 const MINIMUM_GREEN_TIME: u32 = 5;
 
-// ------------------ TrafficLight (TrafficLightClass.py) -------------
+// TrafficLight (TrafficLightClass.py)
 #[derive(Debug, Clone)]
 struct TrafficLight {
     id: String,
@@ -58,7 +58,7 @@ fn check_ambulance(plates: &[String], db: &[&'static str]) -> usize {
     plates.iter().filter(f).count()
 }
 
-// ------------------ manage.detect_lanes (manage.py) -----------------
+// manage.detect_lanes (manage.py)
 fn detect_lanes(plate_numbers: &HashMap<String, Vec<String>>) -> Vec<String> {
     let db = ambulance_plate_db();
     let mut lane_to_count: BTreeMap<String, usize> = BTreeMap::new();
@@ -74,7 +74,7 @@ fn detect_lanes(plate_numbers: &HashMap<String, Vec<String>>) -> Vec<String> {
     entries.into_iter().map(|(k, _)| k).collect()
 }
 
-// ------------------ Controller (ControllerClass.py) -----------------
+// Controller (ControllerClass.py)
 struct Controller {
     lights: HashMap<String, TrafficLight>,
     normal_order: Vec<String>,
@@ -195,7 +195,7 @@ impl Controller {
     }
 }
 
-// ------------------ helper.py functions -----------------------------
+// helper.py functions
 fn can_change_light(controller: &Controller) -> bool {
     let l = &controller.lights[&controller.current_green_id];
     (DEFAULT_GREEN as i32 - l.remaining_time) > MINIMUM_GREEN_TIME as i32
@@ -238,7 +238,7 @@ fn ambulance_light_red(controller: &mut Controller, id: &str, plate_numbers: &mu
     controller.logln("restored".to_string());
 }
 
-// ------------------ main pipeline (final.py) ------------------------
+// main pipeline (final.py)
 fn main() {
     // Sample data - same as sample.py
     let mut plate_numbers: HashMap<String, Vec<String>> = HashMap::new();

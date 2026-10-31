@@ -10,7 +10,7 @@ pub mod typeck;
 
 pub use error::J2Error;
 
-/// compile J source; imports unresolved (no path)
+/// compile J2 source; imports unresolved (no path)
 pub fn compile_to_rust(src: &str) -> Result<String, J2Error> {
     let expanded = imports::preprocess(src, None)?;
     let toks = lexer::tokenize(&expanded)?;

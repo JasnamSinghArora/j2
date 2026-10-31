@@ -17,7 +17,7 @@ DEFAULT_TESTS=(
   bitset_demo combined error_classes purity_safe
 )
 
-# past give/shadow divergences fixed; keep tests green
+# Regression coverage for give and variable shadowing.
 
 if [ "$#" -gt 0 ]; then TESTS=("$@"); else TESTS=("${DEFAULT_TESTS[@]}"); fi
 
@@ -30,7 +30,7 @@ run() { # mode file -> normalized stdout
     dyn) J2_NO_NATIVE=1 J2_PARALLEL=0 $J2 --allow-all "j2-tests/$2.j2" 2>/dev/null ;;
     nat) J2_FORCE_NATIVE=1 J2_PARALLEL=0 $J2 --allow-all "j2-tests/$2.j2" 2>/dev/null ;;
     par) J2_FORCE_NATIVE=1 $J2 --allow-all "j2-tests/$2.j2" 2>/dev/null ;;
-    # AST interpreter (`j2 run`), now the default
+    # Run with the AST interpreter (`j2 run`).
     int) $J2 --allow-all run "j2-tests/$2.j2" 2>/dev/null ;;
   esac | normalize
 }

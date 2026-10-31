@@ -1,14 +1,16 @@
 # J2
 
-A fast, simple programming language with **automatic parallelism** — write ordinary loops and function calls; J2's compiler finds the parallelism and uses your cores for you.
+J2 is a programming language with an interpreter and a native compiler. Native
+builds can run independent loops and function calls across multiple CPU cores.
 
-- **Instant start** — `j file.j2` runs immediately (interpreter-first, no build step).
-- **Native speed on demand** — `j2 build file.j2 -o out` compiles to a native binary and **auto-parallelizes** it: no annotations, no threads, no locks in your code.
-- **Self-contained** — one download. No package manager, no toolchain to install, no network needed.
-- **Tooling included** — a VS Code extension with syntax highlighting, one-key run, and inline errors.
+- Run a program with `j file.j2` without a build step.
+- Compile a native binary with `j2 build file.j2 -o out`. The compiler
+  parallelizes supported patterns when it can establish that they are safe.
+- The download includes the compiler, runtime, and libraries for offline builds.
+- The VS Code extension provides syntax highlighting, a Run command, and inline errors.
 
 ```
-# montecarlo.j2 — the four count_hits calls are independent + pure,
+# montecarlo.j2: the four count_hits calls are independent and pure,
 # so `j2 build` runs them on separate cores automatically.
 func estimate(n: int) -> float = {
     a := count_hits(1, n)
@@ -38,11 +40,13 @@ echo 'print("hello, world")' > hello.j2
 j hello.j2
 ```
 
-Native builds (`j2 build`) link with the system linker — if you don't have the Xcode Command Line Tools yet, run `xcode-select --install` once.
+Native builds (`j2 build`) use the system linker. If the Xcode Command Line Tools
+are missing, install them with `xcode-select --install`.
 
 ## Documentation
 
-**[j2-lang.org](https://j2-lang.org)** — getting started, the language guide, the standard library (18 modules), the CLI, and how the automatic parallelism works.
+[j2-lang.org](https://j2-lang.org) covers installation, the language, the standard
+library, CLI commands, and automatic parallelism.
 
 ## VS Code extension
 
@@ -52,15 +56,16 @@ Download `j2-lang-<version>.vsix` from [Releases](https://github.com/JasnamSingh
 code --install-extension j2-lang-0.1.0.vsix
 ```
 
-You get syntax highlighting for `.j2` files, a ▶ Run button (`Cmd+Shift+R`), and inline error squiggles on save.
+The extension highlights `.j2` files, adds a Run button (`Cmd+Shift+R`), and shows
+inline errors on save.
 
-## CLI at a glance
+## Commands
 
 | Command | What it does |
 |---|---|
 | `j file.j2` | Run instantly (interpreter) |
 | `j2 build file.j2 -o out` | Compile to a native, auto-parallelized binary |
-| `j2 --version` / `j --help` | The usual |
+| `j2 --version` / `j --help` | Show version or help |
 
 ## Source
 
@@ -72,7 +77,5 @@ The compiler source is in [`source/`](source/): the frontend under
 
 ## License
 
-Dual-licensed under either the [MIT license](LICENSE-MIT) or the
-[Apache License 2.0](LICENSE-APACHE), at your option. The release bundle
-also redistributes open-source components — see
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+J2 uses the [MIT license](LICENSE-MIT). Bundled third-party components keep
+their own licenses; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

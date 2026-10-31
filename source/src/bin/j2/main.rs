@@ -231,7 +231,7 @@ fn run_tests(dir: &str) -> ExitCode {
     if failed.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
-/// Reindent J source by bracket nesting depth
+/// Reindent J2 source by bracket nesting depth
 fn format_source(src: &str) -> String {
     let mut out = String::new();
     let mut depth: i32 = 0;

@@ -1,4 +1,4 @@
-// recursive descent J parser; grammar in spec
+// recursive descent J2 parser; grammar in spec
 
 use crate::ast::*;
 use crate::error::J2Error;
@@ -167,7 +167,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Func { name, params, body, ret_ty, type_params })
     }
 
-    /// Parse a J type annotation
+    /// Parse a J2 type annotation
     fn parse_type(&mut self) -> Result<Ty, J2Error> {
         match self.peek().clone() {
             Tok::Func => {
@@ -540,7 +540,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bind_or_expr(&mut self) -> Result<Stmt, J2Error> {
-        // We need to look ahead to decide
+        // Look ahead to distinguish a binding from an expression statement.
         let name = if let Tok::Ident(n) = self.peek().clone() {
             n
         } else {
@@ -638,7 +638,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // ---------- expressions, with precedence ladder ----------
+    // expressions, with precedence ladder
 
     fn parse_expr(&mut self) -> Result<Expr, J2Error> {
         self.parse_pipe()

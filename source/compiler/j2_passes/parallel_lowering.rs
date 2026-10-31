@@ -1,4 +1,4 @@
-// Slim matcher-only entry point
+// Run the parallelism matchers and MIR transformations.
 
 use crate::pass_manager::MirPass;
 use rustc_middle::mir;
@@ -17,25 +17,25 @@ impl<'tcx> MirPass<'tcx> for ParallelLowering {
     }
 
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut mir::Body<'tcx>) {
-        // Log-only detection; no_trimmed_paths avoids diagnostic invariant
+        // Use full paths while detecting and transforming MIR idioms.
         with_no_trimmed_paths!({
             crate::parallel_idioms::detect_idioms(tcx, body);
             crate::parallel_idioms::try_transform_reductions(tcx, body);
             crate::parallel_idioms::try_transform_iterator_methods(tcx, body);
-            // Combinators after iterator_methods; simpler matcher claims first
+            // Run combinator matching after the simpler iterator-method matcher.
             crate::parallel_idioms::try_transform_iterator_combinators(tcx, body);
-            // Phase A.1/D.1, for_each and iter_mut().for_each
+            // for_each and iter_mut().for_each
             crate::parallel_idioms::try_transform_iterator_for_each(tcx, body);
-            // Phase A.2, collect-to-Vec
+            // collect-to-Vec
             crate::parallel_idioms::try_transform_iterator_collect(tcx, body);
-            // Phase C, HashMap iteration
+            // HashMap iteration
             crate::parallel_idioms::try_transform_hashmap_for_each(tcx, body);
             // Generic-T fallback for any-type for_each / filter+count
             crate::parallel_idioms::try_transform_generic_iter_patterns(tcx, body);
-            // N-way before 2-way, greedy longer chains
+            // Match longer call chains before trying two-way invocation.
             crate::parallel_idioms::try_transform_parallel_invoke_n_way(tcx, body);
             crate::parallel_idioms::try_transform_parallel_invoke(tcx, body);
-            // Multi-dim matchers, most specific first, matvec last
+            // Run the specific multidimensional matchers before matrix-vector matching.
             crate::parallel_idioms::try_transform_slice_transpose_f64(tcx, body);
             crate::parallel_idioms::try_transform_slice_broadcast_add_f64(tcx, body);
             crate::parallel_idioms::try_transform_slice_axis_reduce_sum_f64(tcx, body);

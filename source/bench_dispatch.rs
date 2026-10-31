@@ -24,7 +24,7 @@ fn build_group(shape_id: usize, task_count: usize, ops_per_task: usize) -> usize
 }
 
 fn run_one(label: &str, task_count: usize, ops_per_task: usize, iters: usize) {
-    // Use a unique shape_id per
+    // Use a separate cache key for each task count and operation count.
     let shape_id = 0xDEAD_0000 ^ ((task_count as usize) << 8) ^ (ops_per_task as usize);
     let handle = build_group(shape_id, task_count, ops_per_task);
 

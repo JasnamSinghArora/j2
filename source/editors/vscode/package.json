@@ -4,7 +4,7 @@
   "description": "J2 language support: syntax highlighting, run, and inline errors.",
   "version": "0.1.0",
   "publisher": "j2-lang",
-  "license": "(MIT OR Apache-2.0)",
+  "license": "MIT",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages"],
   "main": "./extension.js",

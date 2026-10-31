@@ -1,4 +1,4 @@
-// Phase 9, matvec matcher on idiomatic source
+// matvec matcher on idiomatic source
 
 use std::hint::black_box;
 use std::time::Instant;

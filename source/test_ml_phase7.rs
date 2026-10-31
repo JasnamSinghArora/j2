@@ -1,4 +1,4 @@
-// Phase 7, clamp and multi-AXPY matchers
+// clamp and multi-AXPY matchers
 
 use std::hint::black_box;
 use std::time::Instant;

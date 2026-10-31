@@ -1,4 +1,4 @@
-// J's error hierarchy at compile time
+// J2's error hierarchy at compile time
 
 use std::fmt;
 

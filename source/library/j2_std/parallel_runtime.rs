@@ -1,4 +1,4 @@
-// FILE CREATED BY JASNAM
+// Original implementation by Jasnam Singh Arora.
 
 #![doc(hidden)]
 #![allow(private_bounds)]
@@ -23,7 +23,7 @@ const MAX_TASK_OUTPUTS: usize = 16;
 const MAX_GROUP_TASKS: usize = 16;
 const MAX_GROUP_SHARED_SLOTS: usize = 32;
 const MAX_TASK_SHARED_INPUTS: usize = 16;
-// Lowered from 8 to 3
+// Minimum task count for dispatching work to the pool.
 const MIN_PARALLEL_TASKS: usize = 3;
 // worker threads; caller adds one more lane
 const WORKER_POOL_THREADS: usize = 7;
@@ -88,12 +88,12 @@ fn parallel_budget_allows_execution() -> bool {
     }
 }
 
-// raw u128 slots, half the enum size
+// Store task values in fixed-size u128 slots.
 
 type Slot = u128;
 const SLOT_ZERO: Slot = 0;
 
-// -- TaskOperation ----------------------------------------------------
+// TaskOperation
 
 #[derive(Clone, Copy)]
 enum TaskOperation {
@@ -103,7 +103,7 @@ enum TaskOperation {
     Cast { dst: usize, src: usize, apply: fn(&mut [Slot], usize, usize) },
 }
 
-// -- RuntimeTask ------------------------------------------------------
+// RuntimeTask
 
 #[derive(Clone, Copy)]
 struct RuntimeTask {
@@ -324,7 +324,7 @@ fn init_worker_pool() -> &'static WorkerPool {
         Ordering::Acquire,
     ) {
         Ok(_) => {
-            // We won the race: spawn workers.
+            // This thread owns pool initialization; spawn the workers.
             for worker_index in 0..WORKER_POOL_THREADS {
                 let stats_on = runtime_stats_enabled();
                 if stats_on {
@@ -419,7 +419,7 @@ fn worker_loop(pool: &'static WorkerPool, worker_index: usize) {
         }
         slot.park_state.store(WORKER_STATE_PARKED, Ordering::Release);
         let park_start = if runtime_stats_enabled() { Some(Instant::now()) } else { None };
-        // Park until the dispatcher unparks us
+        // Wait for the dispatcher to wake this worker.
         thread::park();
         slot.park_state.store(WORKER_STATE_RUNNING, Ordering::Release);
         add_elapsed_ns(&STATS.worker_condvar_wait_ns, park_start);
@@ -467,14 +467,14 @@ fn execute_task_batch_on_worker_pool(tasks: &mut [RuntimeTask], start: usize, en
         STATS.hist_parallel_batch_size[bucket].fetch_add(1, Ordering::Relaxed);
     }
 
-    // -- Single-flight acquire -----------------------------------------
+    // Single-flight acquire
     let wait_start = if stats_on { Some(Instant::now()) } else { None };
     acquire_dispatch_slot(pool);
     if let Some(s) = wait_start {
         STATS.worker_mutex_wait_ns.fetch_add(s.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // -- Stage and publish ---------------------------------------------
+    // Stage and publish
     let hold_start = if stats_on { Some(Instant::now()) } else { None };
     let tasks_ptr = unsafe { tasks.as_mut_ptr().add(start) };
     pool.tasks_ptr.store(tasks_ptr, Ordering::Relaxed);
@@ -501,7 +501,7 @@ fn execute_task_batch_on_worker_pool(tasks: &mut [RuntimeTask], start: usize, en
         }
     }
 
-    // -- Caller participates as a worker ------------------------------
+    // Caller participates as a worker
     loop {
         let idx = pool.next_task.fetch_add(1, Ordering::AcqRel);
         if idx >= task_count {
@@ -527,7 +527,7 @@ fn execute_task_batch_on_worker_pool(tasks: &mut [RuntimeTask], start: usize, en
         STATS.worker_dispatch_ns.fetch_add(s.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // -- Cleanup + release --------------------------------------------
+    // Cleanup + release
     let cleanup_start = if stats_on { Some(Instant::now()) } else { None };
     // tasks_ptr is dangling after this function returns
     pool.tasks_ptr.store(ptr::null_mut(), Ordering::Release);
@@ -541,7 +541,7 @@ fn execute_task_batch_on_worker_pool(tasks: &mut [RuntimeTask], start: usize, en
     let _ = new_epoch;
 }
 
-// -- RuntimeGroup -----------------------------------------------------
+// RuntimeGroup
 
 struct RuntimeGroup {
     tasks: [RuntimeTask; MAX_GROUP_TASKS],
@@ -739,7 +739,7 @@ impl RuntimeGroup {
     }
 }
 
-// -- Thread-local group cache -----------------------------------------
+// Thread-local group cache
 
 const GROUP_CACHE_CAP: usize = 256;
 const GROUP_CACHE_PROBE_LIMIT: usize = 8;
@@ -822,7 +822,7 @@ const COMPARE_OP_LE: u8 = 3;
 const COMPARE_OP_GT: u8 = 4;
 const COMPARE_OP_GE: u8 = 5;
 
-// -- ParallelScalar impls ---------------------------------------------
+// ParallelScalar impls
 
 // integers round-trip losslessly via `as`
 macro_rules! impl_parallel_scalar_int {
@@ -1097,7 +1097,7 @@ fn compare_dispatch<T: ParallelCompareOp>(
     }
 }
 
-// -- Utilities --------------------------------------------------------
+// Utilities
 
 fn with_abort_on_panic<R>(f: impl FnOnce() -> R) -> R {
     f()
@@ -1119,7 +1119,7 @@ fn group_mut(handle: usize) -> &'static mut RuntimeGroup {
     unsafe { &mut *ptr::with_exposed_provenance_mut::<RuntimeGroup>(handle) }
 }
 
-// -- Stats ------------------------------------------------------------
+// Stats
 
 struct RuntimeStats {
     cache_hits: AtomicU64,
@@ -1525,7 +1525,7 @@ fn dump_runtime_stats_now() {
     );
 }
 
-// -- Public API: existing typed helpers -------------------------------
+// Public API: existing typed helpers
 
 #[doc(hidden)]
 #[unstable(feature = "parallel_runtime_internal", issue = "none")]
@@ -2315,9 +2315,9 @@ const REDUCE_MODE_RANGE_MAP_COLLECT: u8 = 11;
 const REDUCE_MODE_SLICE_MAP_COLLECT: u8 = 12;
 /// HashMap for_each via pointer-pair snapshot, 16-byte stride
 const REDUCE_MODE_HASHMAP_FOR_EACH: u8 = 13;
-/// Generic-T `slice.iter().for_each(body)` over any `T
+/// `slice.iter().for_each(body)` for a generic element type `T`.
 const REDUCE_MODE_GENERIC_FOR_EACH: u8 = 14;
-/// Generic-T `slice.iter().filter(p).count()` for any `T
+/// `slice.iter().filter(p).count()` for a generic element type `T`.
 const REDUCE_MODE_GENERIC_FILTER_COUNT: u8 = 15;
 
 impl ReducePool {
@@ -2645,7 +2645,7 @@ fn compute_reduce_chunk(pool: &ReducePool, chunk_idx: usize) -> u64 {
             ($T:ty) => {{
                 // SAFETY: slice pinned; pred_addr from real fn
                 let slice_ptr = crate::ptr::with_exposed_provenance::<$T>(slice_addr);
-                // Predicate signature mirrors `Iterator::filter`'s `F
+                // The predicate receives a reference to the iterator's item, as in `Iterator::filter`.
                 let pred: fn(&&$T) -> bool = unsafe {
                     crate::mem::transmute::<*mut (), fn(&&$T) -> bool>(body_ptr)
                 };
@@ -3324,7 +3324,7 @@ fn reduce_worker_loop(pool: &'static ReducePool, worker_index: usize) {
             slot.seen_epoch.store(local_epoch, Ordering::Release);
         }
 
-        // -- Spin phase -----------------------------------------------
+        // Spin phase
         let mut checks = 0u32;
         let mut saw_new_epoch = false;
         loop {
@@ -3346,7 +3346,7 @@ fn reduce_worker_loop(pool: &'static ReducePool, worker_index: usize) {
             continue;
         }
 
-        // -- Park phase -----------------------------------------------
+        // Park phase
         slot.park_state.store(WORKER_STATE_PARKING, Ordering::SeqCst);
         let cur = pool.epoch.load(Ordering::Acquire);
         if cur != local_epoch {
@@ -4919,7 +4919,7 @@ fn parallel_generic_dispatch(
     acc
 }
 
-/// Generic-T `slice.iter().for_each(closure)` for any `T
+/// `slice.iter().for_each(closure)` for a generic element type `T`.
 #[doc(hidden)]
 #[unstable(feature = "parallel_runtime_internal", issue = "none")]
 #[cfg_attr(
@@ -4968,7 +4968,7 @@ pub fn parallel_for_each_slice_dyn_generic<T: Sync>(
     );
 }
 
-/// Generic-T `slice.iter().filter(p).count()` for any `T
+/// `slice.iter().filter(p).count()` for a generic element type `T`.
 #[doc(hidden)]
 #[unstable(feature = "parallel_runtime_internal", issue = "none")]
 #[cfg_attr(
@@ -5874,7 +5874,7 @@ fn parallel_reduce_slice_dispatch(
 /// Op-kind bit marking `body` as slice ptr
 const REDUCE_OP_SLICE_BIT: u8 = 0x80;
 
-// parallel_invoke fork/join; persistent pool, sub-200ns dispatch
+// parallel_invoke fork/join with a persistent worker pool.
 
 /// Compile-time hard cap on worker slots
 const MAX_INVOKE_WORKERS: usize = 32;
@@ -6119,7 +6119,7 @@ fn invoke_worker_loop(pool: &'static InvokePool, idx: usize) {
     IS_PARALLEL_WORKER.with(|flag| flag.set(true));
 
     loop {
-        // -- Spin phase ---------------------------------------------
+        // Spin phase
         let mut spins = 0u32;
         loop {
             if slot.state.load(Ordering::Acquire) == INVOKE_TASK_READY {
@@ -6140,7 +6140,7 @@ fn invoke_worker_loop(pool: &'static InvokePool, idx: usize) {
             }
         }
 
-        // -- Run task ----------------------------------------------
+        // Run task
         let trampoline_addr = slot.trampoline.load(Ordering::Acquire);
         let task_arg = slot.task_ptr.load(Ordering::Acquire);
         // SAFETY: valid trampoline; caller blocks until DONE
@@ -6148,7 +6148,7 @@ fn invoke_worker_loop(pool: &'static InvokePool, idx: usize) {
             unsafe { mem::transmute(trampoline_addr) };
         trampoline_fn(task_arg);
 
-        // -- Publish completion ------------------------------------
+        // Publish completion
         slot.state.store(INVOKE_DONE, Ordering::Release);
     }
 }

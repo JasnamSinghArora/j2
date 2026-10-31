@@ -1,4 +1,4 @@
-// Phase 4, iter().sum() rewritten to parallel_reduce_sum_slice_u64
+// iter().sum() rewritten to parallel_reduce_sum_slice_u64
 
 use std::hint::black_box;
 use std::time::Instant;

@@ -1,4 +1,4 @@
-// J AST node definitions
+// J2 AST node definitions
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -31,7 +31,7 @@ pub enum Stmt {
     },
     /// `global name = ...`
     Global { name: String, value: Expr, mutable: bool },
-    /// `for i in range_expr {
+    /// `for i in range_expr { ... }`
     ForLoop {
         bindings: Vec<String>,
         iter: Expr,
@@ -85,7 +85,7 @@ pub struct Param {
     pub ty: Option<Ty>,
 }
 
-/// J type lattice; `Dyn` is top
+/// J2 type lattice; `Dyn` is top
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,            // i64
@@ -154,13 +154,12 @@ pub enum Expr {
     Filter { lhs: Box<Expr>, rhs: Box<Expr> },
     /// anonymous block yielding last expression
     Block(Block),
-    /// fmt/input are ordinary builtin calls
-    // (No special variant needed
+    // fmt/input use ordinary calls; they need no separate AST variant.
     /// inline `_` condition; parser wraps `_` RHS
     CondLambda(Box<Expr>),
     /// anonymous `func(...)` expr; captures by clone snapshot
     Lambda { params: Vec<Param>, body: Box<FuncBody> },
-    /// `backend { <raw backend>
+    /// `backend { ... }` with the raw backend source preserved.
     NativeBlock(String),
     /// class literal; fields, methods, statics; no `self`
     ClassLit {

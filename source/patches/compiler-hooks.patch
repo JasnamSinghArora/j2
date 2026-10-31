@@ -1,4 +1,5 @@
 Hooks that wire J2 into the backend compiler tree.
+Control-flow hooks by Jayithi Gavva; parallelism hooks by Jasnam Singh Arora.
 Apply from the tree root with: patch -p1 < patches/compiler-hooks.patch
 
 Where the standalone files go:
@@ -35,9 +36,9 @@ Where the standalone files go:
  pub mod rustc_peek;
  mod un_derefer;
  pub mod value_analysis;
-+// CHANGED BY JAYITHI GAVVA: control flow module
++// control flow module
 +pub mod control_flow_analysis;
-+// CHANGED BY JAYITHI GAVVA: re-export key types
++// re-export key types
 +pub use control_flow_analysis::{
 +    CfgEdge, CfgNode, ControlDependenceEdge, ControlDependenceGraph, ControlFlowAnalysis,
 +    ControlFlowGraph, EdgeKind, PostDominatorTree,
@@ -51,7 +52,7 @@ Where the standalone files go:
  mod cost_checker;
  mod cross_crate_inline;
  mod deduce_param_attrs;
-+mod parallel_idioms;  // ADDED BY JASNAM : matcher entry points
++mod parallel_idioms;  // matcher entry points
  mod elaborate_drop;
  mod errors;
  mod ffi_unwind_calls;
@@ -59,7 +60,7 @@ Where the standalone files go:
      pub mod cleanup_post_borrowck : CleanupPostBorrowck;
  
      mod copy_prop : CopyProp;
-+    // CHANGED BY JAYITHI GAVVA: CFG dump pass
++    // CFG dump pass
 +    mod dump_control_flow : DumpControlFlow;
      mod coroutine : StateTransform;
      mod coverage : InstrumentCoverage;
@@ -68,7 +69,7 @@ Where the standalone files go:
      mod lower_slice_len : LowerSliceLenCalls;
      mod match_branches : MatchBranchSimplification;
      mod mentioned_items : MentionedItems;
-+    mod parallel_lowering : ParallelLowering;  // CHANGED BY JASNAM: registers parallel lowering pass
++    mod parallel_lowering : ParallelLowering;  // registers parallel lowering pass
      mod multiple_return_terminators : MultipleReturnTerminators;
      mod post_drop_elaboration : CheckLiveDrops;
      mod prettify : ReorderBasicBlocks, ReorderLocals;
@@ -76,7 +77,7 @@ Where the standalone files go:
          &elaborate_box_derefs::ElaborateBoxDerefs,
          &coroutine::StateTransform,
          &Lint(known_panics_lint::KnownPanicsLint),
-+        &parallel_lowering::ParallelLowering,  // CHANGED BY JASNAM: parallel plan lowering pass
++        &parallel_lowering::ParallelLowering,  // parallel plan lowering pass
      ];
      pm::run_passes_no_validate(tcx, body, passes, Some(MirPhase::Runtime(RuntimePhase::Initial)));
  }
@@ -84,7 +85,7 @@ Where the standalone files go:
              &prettify::ReorderLocals,
              // Dump the end result for testing and debugging purposes.
              &dump_mir::Marker("PreCodegen"),
-+            // CHANGED BY JAYITHI GAVVA: dump CFG/PDT/CDG
++            // dump CFG/PDT/CDG
 +            &dump_control_flow::DumpControlFlow,
          ],
          Some(MirPhase::Runtime(RuntimePhase::Optimized)),
@@ -247,7 +248,7 @@ Where the standalone files go:
  pub mod process;
 +#[doc(hidden)]
 +#[unstable(feature = "parallel_runtime_internal", issue = "none")]
-+pub mod parallel_runtime;  // CHANGED BY JASNAM: expose MIR-called runtime helpers
++pub mod parallel_runtime;  // expose MIR-called runtime helpers
  #[unstable(feature = "random", issue = "130703")]
  pub mod random;
  pub mod sync;

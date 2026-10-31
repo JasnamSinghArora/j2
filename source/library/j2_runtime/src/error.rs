@@ -1,4 +1,4 @@
-// J runtime error hierarchy
+// J2 runtime error hierarchy
 
 use std::fmt;
 

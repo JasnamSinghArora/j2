@@ -26,6 +26,6 @@ rm -f "$OUT"/toolchain/lib/librustc-*_rt.*.dylib
 strip -S "$OUT"/toolchain/lib/librustc_driver-*.dylib 2>/dev/null || true
 echo "[5/7] vendored deps";     cp -R "$ROOT/j2-vendor" "$OUT/j2-vendor"
 echo "[6/7] j2_runtime source";  cp -R "$ROOT/library/j2_runtime/src" "$ROOT/library/j2_runtime/Cargo.toml" "$ROOT/library/j2_runtime/Cargo.lock" "$OUT/library/j2_runtime/"
-# J2 is dual-licensed MIT OR Apache-2.0
+# J2 uses MIT; the backend and dependencies keep their own licenses.
 echo "[7/7] licenses";          cp "$ROOT/deploy/LICENSE-MIT" "$ROOT/LICENSE-APACHE" "$ROOT/deploy/THIRD-PARTY-NOTICES.md" "$OUT/"
 echo "DONE: $OUT ($(du -sh "$OUT" | cut -f1))"

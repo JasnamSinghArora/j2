@@ -364,7 +364,7 @@ impl J2Value {
     }
 }
 
-/// Render a float exactly as J does
+/// Render a float exactly as J2 does
 fn fmt_jfloat(x: f64, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if x.is_nan() {
         write!(f, "NaN")

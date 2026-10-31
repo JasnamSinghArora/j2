@@ -344,7 +344,7 @@ fn stmt_writes_index(s: &Stmt, name: &str) -> bool {
     }
 }
 
-// ------------------------- synthesis / checking -------------------------
+// synthesis / checking
 
 /// Local typing context plus native fn signatures
 pub struct TyCtx<'a> {
@@ -467,7 +467,7 @@ fn synth_binary(ctx: &TyCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> Ty {
     }
 }
 
-/// Numeric type join with J's coercion rule
+/// Numeric type join with J2's coercion rule
 fn num_join(lt: &Ty, rt: &Ty, op: &BinOp) -> Ty {
     let numeric = |t: &Ty| matches!(t, Ty::Int | Ty::Float | Ty::Var(_));
     if !numeric(lt) || !numeric(rt) {
