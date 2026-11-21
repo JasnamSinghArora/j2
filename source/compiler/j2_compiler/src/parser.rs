@@ -1,15 +1,63 @@
-// recursive descent J2 parser; grammar in spec
+// J parser. Recursive descent over the Tok stream from lexer.rs.
+//
+// Grammar (informal; see spec for the canonical version):
+//
+//   program       := { stmt }*
+//   stmt          := bind | func_def | for_loop | repeat_loop | do_repeat
+//                  | loop_inf | if_stmt | stop_stmt | skip_stmt | give_stmt
+//                  | try_stmt | global_stmt | expr_stmt
+//   bind          := IDENT "="  expr  | IDENT ":=" expr
+//                  | IDENT "+="|"-="|"*="|"/="|"%=" expr
+//                  | IDENT "++" | IDENT "--"
+//   func_def      := "func" IDENT "(" param_list ")" "=" (expr | block)
+//   param_list    := { (IDENT | literal) ("," (IDENT | literal))* }?
+//   for_loop      := "for" IDENT { "," IDENT } "in" expr [ "if" expr ]
+//                                                      [ "until" expr ] block
+//   repeat_loop   := "repeat" expr block
+//   do_repeat     := "do" block "repeat" expr
+//   loop_inf      := "loop" block
+//   if_stmt       := "if" expr block [ "else" (if_stmt | block) ]
+//   stop_stmt     := "stop" [ "if" expr ]
+//   skip_stmt     := "skip" [ "if" expr ]
+//   give_stmt     := "give" [ expr ]
+//   try_stmt      := "try" block [ "else" block ]
+//   global_stmt   := "global" IDENT ("=" | ":=") expr
+//   block         := "{" { stmt }* "}"
+//
+//   expr          := pipe
+//   pipe          := filter { ">>" filter }
+//   filter        := or   { "?" or }                  (cond filter inline)
+//   or            := and  { "or" and }
+//   and           := not  { "and" not }
+//   not           := "not" not | cmp
+//   cmp           := range { ("=="|"!="|"<"|"<="|">"|">=") range }
+//   range         := add  [ ".." add? ]               (".." alone = open flow)
+//   add           := mul  { ("+"|"-") mul }
+//   mul           := pow  { ("*"|"/"|"%") pow }
+//   pow           := unary { "**" unary }
+//   unary         := ("-"|"+") unary | postfix
+//   postfix       := atom { call_args | index | member }
+//   call_args     := "(" [ expr { "," expr } ] ")"
+//   index         := "[" expr "]"
+//   member        := "." IDENT
+//   atom          := literal | IDENT | "_" | "(" expr { "," expr } ")"
+//                  | "[" [ expr { "," expr } ] "]"        // seq literal
+//                  | "{" map_entries "}"                  // map literal
+//                  | block_expr
+//
+// Newlines act as statement separators when not inside brackets.
 
 use crate::ast::*;
 use crate::error::J2Error;
 use crate::lexer::{Tok, Token};
 
 pub fn parse(tokens: &[Token]) -> Result<Program, J2Error> {
-    let mut p = Parser { toks: tokens, pos: 0, angle_pending: 0 };
+    let mut p = Parser { toks: tokens, pos: 0, angle_pending: 0, underscore_bound: false };
     p.parse_program()
 }
 
-/// Whether expr references implicit `_`
+/// Whether an expression references the implicit variable `_` (used to
+/// decide if a predicate should become a cond-lambda).
 fn expr_uses_underscore(e: &Expr) -> bool {
     match e {
         Expr::Underscore => true,
@@ -25,16 +73,36 @@ fn expr_uses_underscore(e: &Expr) -> bool {
         }
         Expr::Pair(a, b) => expr_uses_underscore(a) || expr_uses_underscore(b),
         Expr::SeqLit(items) => items.iter().any(expr_uses_underscore),
-        // nested pipe/filter owns its `_` scope
+        // A nested pipe/filter establishes its own `_` scope; don't peer in.
         _ => false,
+    }
+}
+
+/// In callback positions, `_` names the argument of a unary lambda.
+/// Keep this transformation local to those positions: `_` elsewhere still
+/// belongs to an enclosing condition, and nested lambdas/pipes/filters own
+/// their own placeholder scope.
+fn placeholder_lambda(expr: Expr) -> Expr {
+    if expr_uses_underscore(&expr) {
+        Expr::Lambda {
+            params: vec![Param { name: "_".into(), pattern: None, ty: None }],
+            body: Box::new(FuncBody::Expr(expr)),
+        }
+    } else {
+        expr
     }
 }
 
 struct Parser<'a> {
     toks: &'a [Token],
     pos: usize,
-    /// Leftover `>` closes banked from `>>` tokens
+    /// Number of "virtual" closing `>` tokens available, produced when a
+    /// `>>` (lexed as `PipePipe`) closes two nested generic type brackets
+    /// (e.g. `seq<seq<float>>`). The outer close consumes the leftover.
     angle_pending: usize,
+    /// Existing predicate/parameter scopes own `_`. New callback shorthand
+    /// must not reinterpret their references as a nested lambda argument.
+    underscore_bound: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -126,12 +194,12 @@ impl<'a> Parser<'a> {
     fn parse_func_def(&mut self) -> Result<Stmt, J2Error> {
         self.expect(&Tok::Func)?;
         let name = self.expect_ident()?;
-        // Optional generic type parameters
+        // Optional generic type parameters: `<T, U: bound, ...>`.
         let mut type_params: Vec<String> = Vec::new();
         if self.eat(&Tok::Lt) {
             loop {
                 let tp = self.expect_ident()?;
-                // optional `: name` bound, ignored for now
+                // Optional bound `: name` (ignored by the backend for now).
                 if self.eat(&Tok::Colon) {
                     let _ = self.expect_ident()?;
                 }
@@ -146,7 +214,7 @@ impl<'a> Parser<'a> {
             loop {
                 let param = self.parse_param()?;
                 params.push(param);
-                if !self.eat(&Tok::Comma) {
+                if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) {
                     break;
                 }
             }
@@ -159,15 +227,26 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(&Tok::Eq)?;
-        let body = if matches!(self.peek(), Tok::LBrace) {
-            FuncBody::Block(self.parse_block()?)
-        } else {
-            FuncBody::Expr(self.parse_expr()?)
-        };
+        let body = self.parse_func_body(&params)?;
         Ok(Stmt::Func { name, params, body, ret_ty, type_params })
     }
 
-    /// Parse a J2 type annotation
+    fn parse_func_body(&mut self, params: &[Param]) -> Result<FuncBody, J2Error> {
+        let enclosing = self.underscore_bound;
+        self.underscore_bound |= params.iter().any(|p| p.name == "_");
+        let body = if matches!(self.peek(), Tok::LBrace) {
+            self.parse_block().map(FuncBody::Block)
+        } else {
+            self.parse_expr().map(FuncBody::Expr)
+        };
+        self.underscore_bound = enclosing;
+        body
+    }
+
+    /// Parse a type annotation in the J type grammar:
+    ///   ty ::= int | float | bool | text | nil
+    ///        | seq < ty > | map < ty , ty > | pair < ty , ty >
+    ///        | func ( ty,... ) -> ty
     fn parse_type(&mut self) -> Result<Ty, J2Error> {
         match self.peek().clone() {
             Tok::Func => {
@@ -177,7 +256,7 @@ impl<'a> Parser<'a> {
                 if !matches!(self.peek(), Tok::RParen) {
                     loop {
                         params.push(self.parse_type()?);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) { break; }
                     }
                 }
                 self.expect(&Tok::RParen)?;
@@ -216,7 +295,10 @@ impl<'a> Parser<'a> {
                         self.expect_close_angle()?;
                         Ok(Ty::Pair(Box::new(a), Box::new(b)))
                     }
-                    // other idents become type vars
+                    // Any other identifier is treated as a generic type
+                    // variable (`T`). If it isn't actually a declared type
+                    // param, native lowering simply rejects it and the
+                    // function falls back to dynamic.
                     _ => Ok(Ty::Var(name)),
                 }
             }
@@ -227,7 +309,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Consume closing `>`, banking leftover from `>>`
+    /// Consume a closing `>` for a generic type. A `>>` token (lexed as
+    /// `PipePipe`) closes two nested brackets; the leftover close is banked
+    /// in `angle_pending` for the enclosing type to consume.
     fn expect_close_angle(&mut self) -> Result<(), J2Error> {
         if self.angle_pending > 0 {
             self.angle_pending -= 1;
@@ -243,7 +327,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the body of a class literal
+    /// Parse the body of a class literal: fields, methods, statics.
+    /// Caller has already consumed `class`. Optional `extends Name, Name`
+    /// precedes `{`. Inside the braces:
+    ///   - `name = expr`     → field with default
+    ///   - `name = ...` followed by `(`  → method (pure)
+    ///   - `name(...) := { … }` → method (mutating)
+    ///   - `::name = expr`   → static value
+    ///   - `::name(...) = expr` → static method
     fn parse_class_lit(&mut self) -> Result<Expr, J2Error> {
         let mut extends = Vec::new();
         if self.eat(&Tok::Extends) {
@@ -264,7 +355,7 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         let mut statics = Vec::new();
         while !matches!(self.peek(), Tok::RBrace | Tok::Eof) {
-            // Static member: `::name ... `
+            // Static member: `::name … `
             if matches!(self.peek(), Tok::ColonColon) {
                 self.bump();
                 let name = self.expect_ident()?;
@@ -275,17 +366,13 @@ impl<'a> Parser<'a> {
                     if !matches!(self.peek(), Tok::RParen) {
                         loop {
                             params.push(self.parse_param()?);
-                            if !self.eat(&Tok::Comma) { break; }
+                            if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) { break; }
                         }
                     }
                     self.expect(&Tok::RParen)?;
                     self.expect(&Tok::Eq)?;
-                    let body = if matches!(self.peek(), Tok::LBrace) {
-                        FuncBody::Block(self.parse_block()?)
-                    } else {
-                        FuncBody::Expr(self.parse_expr()?)
-                    };
-                    // static method is lambda stored on class
+                    let body = self.parse_func_body(&params)?;
+                    // Static method == a lambda stored on the class.
                     statics.push(ClassStatic {
                         name,
                         value: Expr::Lambda { params, body: Box::new(body) },
@@ -299,20 +386,20 @@ impl<'a> Parser<'a> {
                 self.eat_newlines();
                 continue;
             }
-            // instance member; look-ahead picks field vs method
+            // Instance member: identifier, then look-ahead to decide field vs method.
             let name = self.expect_ident()?;
             if matches!(self.peek(), Tok::LParen) {
-                // method form, `=` expr or `:=` block
+                // Method: `name(params) = …` or `name(params) := { … }`.
                 self.bump();
                 let mut params = Vec::new();
                 if !matches!(self.peek(), Tok::RParen) {
                     loop {
                         params.push(self.parse_param()?);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) { break; }
                     }
                 }
                 self.expect(&Tok::RParen)?;
-                // optional return type annotation
+                // Optional return type: `dist() -> float = …`.
                 let ret_ty = if self.eat(&Tok::Arrow) { Some(self.parse_type()?) } else { None };
                 let mutating = if self.eat(&Tok::ColonEq) { true }
                                else if self.eat(&Tok::Eq) { false }
@@ -320,14 +407,10 @@ impl<'a> Parser<'a> {
                                    let (l, c) = self.cur_loc();
                                    return Err(J2Error::syntax("expected `=` (pure) or `:=` (mutating) after method params", l, c));
                                };
-                let body = if matches!(self.peek(), Tok::LBrace) {
-                    FuncBody::Block(self.parse_block()?)
-                } else {
-                    FuncBody::Expr(self.parse_expr()?)
-                };
+                let body = self.parse_func_body(&params)?;
                 methods.push(ClassMethod { name, mutating, params, ret_ty, body });
             } else if self.eat(&Tok::Colon) {
-                // typed field, optional default
+                // Typed field: `name: ty` or `name: ty = default`.
                 let ty = self.parse_type()?;
                 let default = if self.eat(&Tok::Eq) { Some(self.parse_expr()?) } else { None };
                 fields.push(ClassField { name, ty: Some(ty), default });
@@ -346,7 +429,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_param(&mut self) -> Result<Param, J2Error> {
-        // pattern-match form, param is a literal
+        // Pattern match form: `func fact(0) = ...` - the param is a literal.
         match self.peek().clone() {
             Tok::IntLit(_) | Tok::FloatLit(_) | Tok::TextLit(_)
             | Tok::True | Tok::False | Tok::Null => {
@@ -446,7 +529,7 @@ impl<'a> Parser<'a> {
         self.eat_newlines();
         let else_block = if self.eat(&Tok::Else) {
             if matches!(self.peek(), Tok::If) {
-                // else-if wraps nested If in synthetic block
+                // else-if chain: wrap inside a synthetic block holding a nested If.
                 let l = self.cur_loc().0;
                 let inner = self.parse_if()?;
                 Some(Block { stmts: vec![inner], stmt_lines: vec![l] })
@@ -495,7 +578,7 @@ impl<'a> Parser<'a> {
         self.eat_newlines();
         let mut typed_handlers = Vec::new();
         let mut default_handler = None;
-        // parse else-KIND chain, then optional else
+        // Parse zero or more `else KIND { … }` then optional `else { … }`.
         while self.eat(&Tok::Else) {
             self.eat_newlines();
             if let Tok::Ident(name) = self.peek().clone() {
@@ -540,7 +623,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bind_or_expr(&mut self) -> Result<Stmt, J2Error> {
-        // Look ahead to distinguish a binding from an expression statement.
+        // We need to look ahead to decide: an IDENT followed by =/:=/op= is a bind;
+        // followed by ++/--, an inc/dec; otherwise, expression-statement.
         let name = if let Tok::Ident(n) = self.peek().clone() {
             n
         } else {
@@ -550,13 +634,13 @@ impl<'a> Parser<'a> {
             Tok::Eq => {
                 self.bump(); // name
                 self.bump(); // =
-                let value = self.parse_expr()?;
+                let value = self.parse_binding_value()?;
                 Ok(Stmt::Bind { name, value, mutable: false })
             }
             Tok::ColonEq => {
                 self.bump();
                 self.bump();
-                let value = self.parse_expr()?;
+                let value = self.parse_binding_value()?;
                 Ok(Stmt::Bind { name, value, mutable: true })
             }
             Tok::PlusEq | Tok::MinusEq | Tok::StarEq | Tok::SlashEq | Tok::PercentEq => {
@@ -584,7 +668,9 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::IncDec { name, inc: false })
             }
             _ => {
-                // parse expr first; `=` means indexed/member assign
+                // Could be a bare expression OR an indexed/member
+                // assignment such as `s[i] = v` or `m.k = v`. Parse the
+                // full expression first, then check for `=`.
                 let lhs = self.parse_expr()?;
                 if matches!(self.peek(), Tok::Eq) {
                     self.bump();
@@ -607,6 +693,26 @@ impl<'a> Parser<'a> {
                 }
                 Ok(Stmt::Expr(lhs))
             }
+        }
+    }
+
+    fn parse_binding_value(&mut self) -> Result<Expr, J2Error> {
+        let start = self.pos;
+        let angle_pending = self.angle_pending;
+        let value = self.parse_expr()?;
+        if !self.underscore_bound && expr_uses_underscore(&value) {
+            // A free outer `_` keeps ownership of nested references. Parse
+            // again without callback sugar so ` _ + map(1, _ + 2)` retains
+            // its pre-shorthand AST. A plain `map(xs, _ + 1)` has already
+            // bound its placeholder and does not take this path.
+            self.pos = start;
+            self.angle_pending = angle_pending;
+            self.underscore_bound = true;
+            let value = self.parse_expr();
+            self.underscore_bound = false;
+            value
+        } else {
+            Ok(value)
         }
     }
 
@@ -638,7 +744,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // expressions, with precedence ladder
+    // ---------- expressions, with precedence ladder ----------
 
     fn parse_expr(&mut self) -> Result<Expr, J2Error> {
         self.parse_pipe()
@@ -648,6 +754,7 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_filter()?;
         while self.eat(&Tok::PipePipe) {
             let rhs = self.parse_filter()?;
+            let rhs = if self.underscore_bound { rhs } else { placeholder_lambda(rhs) };
             lhs = Expr::Pipe { lhs: Box::new(lhs), rhs: Box::new(rhs) };
         }
         Ok(lhs)
@@ -656,8 +763,14 @@ impl<'a> Parser<'a> {
     fn parse_filter(&mut self) -> Result<Expr, J2Error> {
         let mut lhs = self.parse_or()?;
         while self.eat(&Tok::Question) {
-            let rhs = self.parse_or()?;
-            // predicate using `_` becomes per-element cond-lambda
+            let enclosing = self.underscore_bound;
+            self.underscore_bound = true;
+            let rhs = self.parse_or();
+            self.underscore_bound = enclosing;
+            let rhs = rhs?;
+            // An inline predicate that mentions `_` becomes a cond-lambda so
+            // it's applied per element (e.g. `seq ? (_ > 0)`), rather than
+            // eagerly evaluated against an unbound `_`.
             let rhs = if expr_uses_underscore(&rhs) {
                 Expr::CondLambda(Box::new(rhs))
             } else {
@@ -714,7 +827,7 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    // C-style bitwise precedence, OR lowest
+    // Bitwise OR < XOR < AND < shift < range (standard C-ish precedence).
     fn parse_bor(&mut self) -> Result<Expr, J2Error> {
         let mut lhs = self.parse_bxor()?;
         while self.eat(&Tok::Pipe) {
@@ -747,7 +860,10 @@ impl<'a> Parser<'a> {
         loop {
             let op = match self.peek() {
                 Tok::Shl => BinOp::Shl,
-                // `>>` is also the pipe token
+                // `>>` is also the pipe token (PipePipe). We *don't* repurpose
+                // it for bit-shift - users wanting bit-shift call bits.shr(a, n).
+                // This avoids a parser-ambiguity headache and keeps the pipe
+                // operator's semantics untouched.
                 _ => break,
             };
             self.bump();
@@ -760,7 +876,9 @@ impl<'a> Parser<'a> {
     fn parse_range(&mut self) -> Result<Expr, J2Error> {
         let lhs = self.parse_add()?;
         if self.eat(&Tok::DotDot) {
-            // `n..` is open-ended unless an expr follows
+            // Open-ended flow: `n..` (followed by something that isn't a range bound).
+            // We attempt to parse another expression. If the next token doesn't start
+            // an expression, treat it as open-ended.
             if expr_start(self.peek()) {
                 let rhs = self.parse_add()?;
                 Ok(Expr::Range { start: Box::new(lhs), end: Some(Box::new(rhs)) })
@@ -835,13 +953,16 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Tok::LParen => {
                     self.bump();
-                    // named args collected into one Map argument
+                    // Support both positional `f(a, b)` and named `Cls(x: 1, y: 2)`
+                    // arg shapes. If any arg is `name: value`, collect them all
+                    // into a Map literal as the single argument (class
+                    // constructor reads it as field overrides).
                     let mut args: Vec<Expr> = Vec::new();
                     let mut named: Vec<(String, Expr)> = Vec::new();
                     let mut saw_named = false;
                     if !matches!(self.peek(), Tok::RParen) {
                         loop {
-                            // Lookahead: `IDENT :` -> named arg
+                            // Lookahead: `IDENT :` → named arg
                             let is_named = matches!(self.peek(), Tok::Ident(_))
                                 && matches!(self.peek_at(1), Tok::Colon);
                             if is_named {
@@ -853,7 +974,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 args.push(self.parse_expr()?);
                             }
-                            if !self.eat(&Tok::Comma) { break; }
+                            if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) { break; }
                         }
                     }
                     self.expect(&Tok::RParen)?;
@@ -864,6 +985,13 @@ impl<'a> Parser<'a> {
                         }
                         args.push(Expr::MapLit(named));
                     }
+                    if matches!(&expr, Expr::Ident(name) if name == "map" || name == "filter")
+                        && args.len() == 2
+                        && !self.underscore_bound
+                    {
+                        let callback = args.pop().unwrap();
+                        args.push(placeholder_lambda(callback));
+                    }
                     expr = Expr::Call { callee: Box::new(expr), args };
                 }
                 Tok::LBracket => {
@@ -873,7 +1001,7 @@ impl<'a> Parser<'a> {
                     expr = Expr::Index { coll: Box::new(expr), idx: Box::new(idx) };
                 }
                 Tok::Dot => {
-                    // member access; require ident on right
+                    // member access; require an ident on the right
                     self.bump();
                     let field = self.expect_ident()?;
                     expr = Expr::Member { obj: Box::new(expr), field };
@@ -886,12 +1014,12 @@ impl<'a> Parser<'a> {
 
     fn parse_atom(&mut self) -> Result<Expr, J2Error> {
         let tok = self.peek().clone();
-        // class literal with optional extends
+        // Class literal: `class [extends A, B] { … }`.
         if matches!(tok, Tok::Class) {
             self.bump();
             return self.parse_class_lit();
         }
-        // lambda expression in expression position
+        // Lambda expression: `func(params) = body` in expression position.
         if matches!(tok, Tok::Func) {
             self.bump();
             self.expect(&Tok::LParen)?;
@@ -900,25 +1028,26 @@ impl<'a> Parser<'a> {
                 loop {
                     let p = self.parse_param()?;
                     params.push(p);
-                    if !self.eat(&Tok::Comma) { break; }
+                    if !self.eat(&Tok::Comma) || matches!(self.peek(), Tok::RParen) { break; }
                 }
             }
             self.expect(&Tok::RParen)?;
             self.expect(&Tok::Eq)?;
-            let body = if matches!(self.peek(), Tok::LBrace) {
-                FuncBody::Block(self.parse_block()?)
-            } else {
-                FuncBody::Expr(self.parse_expr()?)
-            };
+            let body = self.parse_func_body(&params)?;
             return Ok(Expr::Lambda { params, body: Box::new(body) });
         }
-        // native escape hatch; arbitrary code, needs J2_TRUSTED=1
+        // backend escape hatch: `backend { … }`. The lexer already captured the
+        // raw inner source as a `Tok::NativeBlockSource` token following `Tok::Native`.
+        // SECURITY: this runs *arbitrary native code*, so it is disabled unless
+        // the program is explicitly trusted (`J2_TRUSTED=1`, set by the driver's
+        // `--allow-unsafe`). Untrusted source is rejected with a clear error
+        // rather than silently compiling an RCE.
         if matches!(tok, Tok::Native) {
             let trusted = std::env::var("J2_TRUSTED").map(|v| v == "1").unwrap_or(false);
             if !trusted {
                 let (l, c) = self.cur_loc();
                 return Err(J2Error::syntax(
-                    "`backend { ... }` (raw-backend escape hatch) is disabled because it executes \
+                    "`backend { … }` (raw-backend escape hatch) is disabled because it executes \
                      arbitrary native code. Re-run with `--allow-unsafe` (or set J2_TRUSTED=1) \
                      to enable it for trusted source.",
                     l, c,
@@ -1003,6 +1132,7 @@ impl<'a> Parser<'a> {
                 let first = self.parse_expr()?;
                 if self.eat(&Tok::Comma) {
                     let second = self.parse_expr()?;
+                    self.eat(&Tok::Comma);
                     self.expect(&Tok::RParen)?;
                     Ok(Expr::Pair(Box::new(first), Box::new(second)))
                 } else {
@@ -1016,6 +1146,7 @@ impl<'a> Parser<'a> {
                 if !matches!(self.peek(), Tok::RBracket) {
                     items.push(self.parse_expr()?);
                     while self.eat(&Tok::Comma) {
+                        if matches!(self.peek(), Tok::RBracket) { break; }
                         items.push(self.parse_expr()?);
                     }
                 }
@@ -1023,7 +1154,8 @@ impl<'a> Parser<'a> {
                 Ok(Expr::SeqLit(items))
             }
             Tok::LBrace => {
-                // Disambiguate map literal vs block
+                // Disambiguate map literal vs block. A map literal opens with
+                // `IDENT ":" expr` or is empty (`{}`).
                 if self.is_map_literal() {
                     self.bump();
                     let mut entries = Vec::new();
@@ -1034,6 +1166,7 @@ impl<'a> Parser<'a> {
                         entries.push((key, val));
                         while self.eat(&Tok::Comma) {
                             self.eat_newlines();
+                            if matches!(self.peek(), Tok::RBrace) { break; }
                             let k = self.expect_ident()?;
                             self.expect(&Tok::Colon)?;
                             let v = self.parse_expr()?;
@@ -1055,7 +1188,8 @@ impl<'a> Parser<'a> {
     }
 
     fn is_map_literal(&self) -> bool {
-        // `{}` or `IDENT:` after brace means map
+        // Look at the tokens just inside the brace: if it's RBrace, it's `{}` (treat as
+        // empty map). If it's IDENT followed by COLON, it's a map. Otherwise, it's a block.
         if !matches!(self.peek(), Tok::LBrace) {
             return false;
         }
@@ -1095,4 +1229,171 @@ fn expr_start(t: &Tok) -> bool {
             | Tok::Plus
             | Tok::Not
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expression(src: &str) -> Expr {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut program = parse(&tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        match program.items.pop().unwrap() {
+            Stmt::Expr(expr) => expr,
+            other => panic!("expected expression, got {other:?}"),
+        }
+    }
+
+    fn assert_placeholder(expr: &Expr) -> &Expr {
+        let Expr::Lambda { params, body } = expr else {
+            panic!("expected placeholder lambda, got {expr:?}");
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "_");
+        assert!(params[0].pattern.is_none());
+        assert!(params[0].ty.is_none());
+        let FuncBody::Expr(inner) = body.as_ref() else {
+            panic!("placeholder must have an expression body");
+        };
+        inner
+    }
+
+    #[test]
+    fn placeholder_callbacks_are_unary_value_lambdas() {
+        for src in ["map(values, _ * 2)", "filter(values, _ > 0)"] {
+            let Expr::Call { args, .. } = expression(src) else { unreachable!() };
+            let inner = assert_placeholder(&args[1]);
+            assert!(matches!(inner, Expr::Binary { lhs, .. } if matches!(lhs.as_ref(), Expr::Underscore)));
+        }
+        let Expr::Pipe { rhs, .. } = expression("values >> (_ * 2)") else { unreachable!() };
+        assert_placeholder(&rhs);
+        let Expr::Call { args, .. } = expression("map(values, _)") else { unreachable!() };
+        assert!(matches!(assert_placeholder(&args[1]), Expr::Underscore));
+    }
+
+    #[test]
+    fn repeated_placeholders_refer_to_one_argument() {
+        let Expr::Call { args, .. } = expression("map(values, _ * _ + offset)") else { unreachable!() };
+        assert_placeholder(&args[1]);
+        let Expr::Call { args, .. } = expression("map(values, sqrt(_))") else { unreachable!() };
+        assert!(matches!(assert_placeholder(&args[1]), Expr::Call { .. }));
+    }
+
+    #[test]
+    fn callback_placeholders_do_not_escape_nested_scopes() {
+        let Expr::Call { args, .. } = expression("map(values, func(x) = x >> (_ * 2))") else { unreachable!() };
+        let Expr::Lambda { params, body } = &args[1] else { unreachable!() };
+        assert_eq!(params[0].name, "x");
+        let FuncBody::Expr(Expr::Pipe { rhs, .. }) = body.as_ref() else { unreachable!() };
+        assert_placeholder(rhs);
+
+        let Expr::Call { args, .. } = expression("map(values, map(other, _ * 2))") else { unreachable!() };
+        let Expr::Call { args: inner_args, .. } = &args[1] else { unreachable!() };
+        assert_placeholder(&inner_args[1]);
+
+        let Expr::Pipe { rhs, .. } = expression("values >> (other ? (_ > 0))") else { unreachable!() };
+        assert!(matches!(rhs.as_ref(), Expr::Filter { .. }));
+    }
+
+    #[test]
+    fn existing_placeholder_contexts_are_preserved() {
+        let Expr::Filter { rhs, .. } = expression("values ? (_ > 0)") else { unreachable!() };
+        assert!(matches!(rhs.as_ref(), Expr::CondLambda(_)));
+
+        let Expr::Call { args, .. } = expression("sqrt(_)") else { unreachable!() };
+        assert!(matches!(args[0], Expr::Underscore));
+
+        let Expr::Call { args, .. } = expression("custom(values, _ * 2)") else { unreachable!() };
+        assert!(matches!(args[1], Expr::Binary { .. }));
+
+        let Expr::Call { args, .. } = expression("map(values, transform)") else { unreachable!() };
+        assert!(matches!(&args[1], Expr::Ident(name) if name == "transform"));
+    }
+
+    #[test]
+    fn callback_sugar_preserves_enclosing_predicate_placeholders() {
+        let Expr::Filter { rhs, .. } = expression("values ? (map(1, _ + 2) > 3)") else { unreachable!() };
+        let Expr::CondLambda(predicate) = rhs.as_ref() else { unreachable!() };
+        let Expr::Binary { lhs, .. } = predicate.as_ref() else { unreachable!() };
+        let Expr::Call { args, .. } = lhs.as_ref() else { unreachable!() };
+        assert!(matches!(&args[1], Expr::Binary { lhs, .. } if matches!(lhs.as_ref(), Expr::Underscore)));
+
+        // The established predicate scope must not leak into the next statement.
+        let tokens = crate::lexer::tokenize("values ? (filter(1, _ + 2) > 3)\nmap(values, _ * 2)").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Stmt::Expr(Expr::Call { args, .. }) = &program.items[1] else { unreachable!() };
+        assert_placeholder(&args[1]);
+    }
+
+    #[test]
+    fn callback_sugar_preserves_explicit_underscore_parameters() {
+        let source = "func f(_) = map(1, _ + 2)\nfunc g(_) = 1 >> factory(_)\nmap(values, _ * 2)";
+        let tokens = crate::lexer::tokenize(source).unwrap();
+        let program = parse(&tokens).unwrap();
+        let Stmt::Func { body: FuncBody::Expr(Expr::Call { args, .. }), .. } = &program.items[0] else { unreachable!() };
+        assert!(matches!(&args[1], Expr::Binary { .. }));
+        let Stmt::Func { body: FuncBody::Expr(Expr::Pipe { rhs, .. }), .. } = &program.items[1] else { unreachable!() };
+        assert!(matches!(rhs.as_ref(), Expr::Call { .. }));
+        let Stmt::Expr(Expr::Call { args, .. }) = &program.items[2] else { unreachable!() };
+        assert_placeholder(&args[1]);
+
+        let Expr::Call { args, .. } = expression("apply(func(_) = filter(1, _ + 2))") else { unreachable!() };
+        let Expr::Lambda { body, .. } = &args[0] else { unreachable!() };
+        let FuncBody::Expr(Expr::Call { args, .. }) = body.as_ref() else { unreachable!() };
+        assert!(matches!(&args[1], Expr::Binary { .. }));
+    }
+
+    #[test]
+    fn binding_with_free_outer_placeholder_preserves_nested_references() {
+        let source = "func map(a,b) = a+b\npredicate = _ + map(1, _ + 2)\nresult = map(values, _ + 1)";
+        let tokens = crate::lexer::tokenize(source).unwrap();
+        let program = parse(&tokens).unwrap();
+        let Stmt::Bind { value: Expr::Binary { lhs, rhs, .. }, .. } = &program.items[1] else { unreachable!() };
+        assert!(matches!(lhs.as_ref(), Expr::Underscore));
+        let Expr::Call { args, .. } = rhs.as_ref() else { unreachable!() };
+        assert!(matches!(&args[1], Expr::Binary { lhs, .. } if matches!(lhs.as_ref(), Expr::Underscore)));
+        let Stmt::Bind { value: Expr::Call { args, .. }, .. } = &program.items[2] else { unreachable!() };
+        assert_placeholder(&args[1]);
+    }
+
+    #[test]
+    fn trailing_commas_are_allowed_in_delimited_lists() {
+        let sources = [
+            "[1, 2,]",
+            "[\n1,\n2,\n]",
+            "{a: 1, b: 2,}",
+            "{\na: 1,\nb: 2,\n}",
+            "(1, 2,)",
+            "f(1, 2,)",
+            "f(\n1,\n2,\n)",
+            "Point(x: 1, y: 2,)",
+            "func f(x, y,) = x + y",
+            "func f(0,) = 1",
+            "func f(x: int,) -> int = x",
+            "f = func(x,) = x",
+            "func apply(f: func(int,) -> int, x: int,) -> int = f(x,)",
+            "Point = class { x = 0 move(dx,) := { x = x + dx } ::origin(x,) = x }",
+            "map([1, 2,], _ * 2,)",
+        ];
+        for src in sources {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            assert!(parse(&tokens).is_ok(), "failed to parse {src}");
+        }
+    }
+
+    #[test]
+    fn trailing_comma_support_does_not_allow_missing_elements() {
+        let sources = [
+            "[,]", "[1,,]", "[1, 2,,]", "{,}", "{a: 1,,}",
+            "f(,)", "f(1,,)", "f(x: 1,,)", "f(1, x: 2,)",
+            "func f(,) = 1", "func f(x,,) = x", "f = func(x,,) = x",
+            "(1,)", "(1, 2,,)", "(1, 2, 3,)",
+            "C = class { m(x,,) = x }",
+        ];
+        for src in sources {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            assert!(parse(&tokens).is_err(), "unexpectedly parsed {src}");
+        }
+    }
 }

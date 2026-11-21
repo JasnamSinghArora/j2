@@ -1,0 +1,22 @@
+# A user-defined collection function must never be replaced by the builtin.
+func map(xs, callback) = {
+    print("custom map")
+    xs
+}
+func filter(xs, callback) = {
+    print("custom filter")
+    xs
+}
+values = [1, 2, 3]
+mapped = map(values, _ + 1)
+filtered = filter(values, _ > 10)
+assert_eq(mapped, values)
+assert_eq(filtered, values)
+
+# Local non-callables shadow builtin names and retain their catchable error.
+func bad_call(xs: seq<int>, map: int) -> seq<int> = map(xs, _ + 1)
+try {
+    bad_call(values, 7)
+    assert false, "local map binding was ignored"
+} else TypeError { print("caught non-callable binding") }
+print("v2 shadowing: ok")

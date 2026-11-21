@@ -1,0 +1,55 @@
+# Collections above the dispatch threshold exercise actual worker paths.
+values = collect(1..40000)
+func score(x: int) -> int = {
+    result := 0
+    for j in 1..8 { result += x + j }
+    result
+}
+scored = map(values, score)
+assert_eq(len(scored), 40000)
+assert_eq(scored[0], 44)
+assert_eq(scored[39999], 320036)
+assert_eq(sum(scored), 6401600000)
+
+scale = 3
+shifted = map(values, func(x) = x * scale + 1)
+assert_eq(shifted[39999], 120001)
+evens = filter(values, _ % 2 == 0)
+assert_eq(len(evens), 20000)
+assert_eq(sum(evens), 400020000)
+chained = values >> (_ + 2) >> (_ * 2)
+assert_eq(chained[39999], 80004)
+
+func fib(n: int) -> int = {
+    if n <= 1 { give n }
+    fib(n - 1) + fib(n - 2)
+}
+small = make_seq(33000, 6)
+recursive = map(small, fib)
+assert_eq(sum(recursive), 264000)
+
+# The compiler must retain sequential behavior for effects and shared captures.
+seen := []
+func record(x) = { push(seen, x)
+ x }
+assert_eq(map([3, 1, 2], record), [3, 1, 2])
+assert_eq(seen, [3, 1, 2])
+lookup = [10, 20]
+assert_eq(map([1, 2], func(x) = lookup[x - 1]), [10, 20])
+
+# Native scalar type, precision, and rounding regressions.
+large = [-9007199254740993, 2]
+absolute = map(large, abs)
+assert_eq(absolute, [9007199254740993, 2])
+halves = [2.5, 3.5, -2.5]
+rounded = map(halves, round)
+assert_eq(rounded, [2, 4, -2])
+negatives = [-3, -2, -1]
+remainders = map(negatives, _ % 2)
+assert_eq(remainders, [1, 0, 1])
+func hygiene(xs: seq<int>, __j2_source_1: int) -> seq<int> = {
+    n = len(xs)
+    map(xs, func(n) = n + __j2_source_1)
+}
+assert_eq(hygiene([1, 2], 3), [4, 5])
+print("v2 parallel: ok")

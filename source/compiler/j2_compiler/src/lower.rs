@@ -1,26 +1,49 @@
-// J2 to backend source lowering
+// J → backend source lowering.
+//
+// Each J construct lowers to a backend expression/statement that calls into
+// j2_runtime. Type discipline: every J runtime value is `J2Value`, every
+// J statement produces a `J2Result<J2Value>` (or `J2Result<()>` for those
+// that don't return). The transpiled program is one backend `main` function
+// that constructs a global env (HashMap<String, J2Value>) and walks the
+// J program top-down.
+//
+// Mutability:
+//   - `name = expr`  → env.insert("name", lock-constant value)
+//   - `name := expr` → env.insert("name", mutable value)
+//   - Reassignment of a `=` binding via `=` raises MutabilityError at
+//     runtime via the helper `__bind_const` / `__bind_mut` / `__rebind`.
+//
+// Output goes to a single .rs file; the j driver then invokes backend-cc on it.
 
 use crate::ast::*;
 use crate::typeck::{self, Borrow, FnSig, NativeFns};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+mod parallel_loops;
+mod parallel_callbacks;
+
 pub struct Lowered {
     pub rust_src: String,
 }
 
 pub fn lower_program(prog: &Program) -> Lowered {
-    // Resolve bare-identifier types that name native classes
+    // Resolve bare-identifier types that name native classes (`p: Point`,
+    // `-> Point`) from `Ty::Var` to `Ty::Class` before any analysis runs.
     let prog = &normalize_class_types(prog);
     let mut out = String::new();
     // Prelude.
     out.push_str(PREAMBLE);
 
-    // Decide which top-level functions lower natively
+    // Decide which top-level functions lower natively (typed subset).
+    // `sel.fns` are all natively-lowered; `sel.inferred` is the subset whose
+    // types were inferred (no annotations) and therefore keep a dynamic
+    // fallback so the interpreter runs only when the native path can't apply.
     let sel = select_native_fns(prog);
     let native = &sel.fns;
 
-    // emit native class items first, before users
+    // Emit native class structs + impls + boundary helpers at module level,
+    // before any fn that constructs or consumes them.
     for stmt in &prog.items {
         if let Stmt::Bind { name, value: Expr::ClassLit { extends, fields, methods, .. }, .. } = stmt {
             if let Some(csig) = sel.classes.get(name) {
@@ -34,11 +57,12 @@ pub fn lower_program(prog: &Program) -> Lowered {
         }
     }
 
-    // module-level native fns for MIR matchers
+    // Emit native fn items + boxing shims at module level (so backend-cc can
+    // optimize them and the MIR matchers can see them as real `fn`s).
     for stmt in &prog.items {
         if let Stmt::Func { name, params, body, type_params, .. } = stmt {
             if let Some(sig) = native.get(name) {
-                // always Ok; select_native_fns kept only lowerable fns
+                // Guaranteed Ok: select_native_fns only keeps fns that lower.
                 if let Ok(emit) = lower_native_fn(name, params, body, sig, type_params, native, &sel.safe_gen, &sel.classes) {
                     out.push('\n');
                     out.push_str(&emit.items);
@@ -50,13 +74,17 @@ pub fn lower_program(prog: &Program) -> Lowered {
         }
     }
 
-    // Outline native-able top-level for-range loops
+    // Outline native-able top-level for-range loops: emit a synthesized fn
+    // per loop and remember the boundary call to splice into `real_main`.
     let gamma_top = infer_top_gamma(prog, native);
     let mut outlines: HashMap<usize, String> = HashMap::new();
     for (idx, stmt) in prog.items.iter().enumerate() {
+        if std::env::var("J2_NO_NATIVE").as_deref() == Ok("1") {
+            break;
+        }
         let outlined = match stmt {
             Stmt::ForLoop { .. } => try_outline_top_loop(idx, stmt, &gamma_top, native, &sel.safe_gen, &sel.classes),
-            // top-level data-producing bindings
+            // Top-level data-producing bindings (`r := data >> f`, etc.).
             Stmt::Bind { name, value, mutable } => {
                 try_outline_top_bind(idx, name, value, *mutable, &gamma_top, native, &sel.safe_gen, &sel.classes)
             }
@@ -71,16 +99,21 @@ pub fn lower_program(prog: &Program) -> Lowered {
     }
 
     out.push_str("\nfn main() {\n");
-    // Convert any native panic
+    // Convert any native panic (out-of-bounds index, integer overflow, etc.)
+    // into a clean J runtime error instead of an abort+backtrace, so a buggy
+    // typed program fails like the dynamic interpreter would (a catchable-style
+    // error message) rather than crashing. The panic hook captures the message
+    // quietly; `catch_unwind` turns the unwind into an `Err`.
     out.push_str("    __install_panic_hook();\n");
     out.push_str("    let __r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(real_main));\n");
     out.push_str("    let __msg: Option<String> = match __r {\n");
     out.push_str("        Ok(Ok(())) => None,\n");
     out.push_str("        Ok(Err(e)) => Some(e.to_string()),\n");
-    out.push_str("        Err(_) => Some(format!(\"RuntimeError: {}\", __take_panic_msg())),\n");
+    out.push_str("        Err(payload) => { let msg = payload.downcast_ref::<String>().cloned().or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(__take_panic_msg); Some(format!(\"RuntimeError: {}\", msg)) },\n");
     out.push_str("    };\n");
     out.push_str("    if let Some(m) = __msg {\n");
-    // annotate with executing top-level line, best-effort
+    // Annotate with the top-level statement that was executing (best-effort
+    // source location), reusing the per-statement line tracker.
     out.push_str("        match __current_line() { 0 => eprintln!(\"{}\", m), n => eprintln!(\"{} (at line {})\", m, n) }\n");
     out.push_str("        std::process::exit(1);\n");
     out.push_str("    }\n");
@@ -89,23 +122,33 @@ pub fn lower_program(prog: &Program) -> Lowered {
     out.push_str("    let env_rc = new_env();\n");
     out.push_str("    let env: &EnvRef = &env_rc;\n");
     for (idx, stmt) in prog.items.iter().enumerate() {
-        // record top-level line for runtime errors
+        // Record the source line of this top-level statement so a runtime
+        // error can report where (at the top level) execution was.
         if let Some(&line) = prog.item_lines.get(idx) {
             if line > 0 {
                 let _ = writeln!(out, "    __set_line({});", line);
             }
         }
-        // An outlined top-level loop
+        // An outlined top-level loop: emit the native boundary call (with
+        // its built-in dynamic fallback) instead of the interpreted loop.
         if let Some(boundary) = outlines.get(&idx) {
             out.push_str(boundary);
             continue;
         }
         match stmt {
-            // A higher-order native fn
+            // A higher-order native fn: its generic `impl Fn` item is emitted
+            // above for native→native call sites, but the dynamic boundary
+            // registers the interpreter version (a runtime function *value*
+            // can't be monomorphized). Falls through to the dynamic Func path.
             Stmt::Func { name, .. } if sel.hof.contains(name) => {
                 lower_stmt_top(stmt, &mut out, 1);
             }
-            // inferred native fn; dynamic fallback on Err
+            // An *inferred* native function keeps a dynamic fallback: the
+            // shim runs the native path, and if its runtime type-checks fail
+            // (`Err`), we fall back to the dynamic closure. The native fn
+            // only mutates local copies before write-back, so falling back
+            // on error is sound. → the interpreter runs only when the native
+            // path genuinely cannot handle the actual argument types.
             Stmt::Func { name, params, body, .. } if sel.inferred.contains(name) => {
                 let dyn_fn = lower_func_body(params, body);
                 let _ = writeln!(out, "    {{");
@@ -118,14 +161,29 @@ pub fn lower_program(prog: &Program) -> Lowered {
                 let _ = writeln!(out, "        __globalize(env, \"{}\");", name);
                 let _ = writeln!(out, "    }}");
             }
-            // An *annotated* native function is a contract
-            Stmt::Func { name, .. } if native.contains_key(name) => {
-                let _ = writeln!(
-                    out,
-                    "    __bind(env, \"{n}\", J2Value::Builtin(std::sync::Arc::new(|__a: &[J2Value]| -> J2Result<J2Value> {{ {n}__shim(__a) }}), \"{n}\"), true)?;",
-                    n = name,
-                );
-                let _ = writeln!(out, "    __globalize(env, \"{}\");", name);
+            // Annotated functions retain their argument contracts, but an
+            // aliased mutable argument or a numeric representation that the
+            // native copy would change must run the original dynamic body.
+            Stmt::Func { name, params, body, .. } if native.contains_key(name) => {
+                let sig = &native[name];
+                if let Some(guard) = native_boundary_fallback(sig, "__a") {
+                    let dyn_fn = lower_func_body(params, body);
+                    let checks = native_validate_args(sig, "__a", "                ", &sel.classes)
+                        .expect("selected native signature can be unboxed");
+                    let _ = writeln!(out, "    {{\n        let __dyn = {dyn_fn};");
+                    let _ = writeln!(out, "        __bind(env, \"{name}\", J2Value::Builtin(std::sync::Arc::new(move |__a: &[J2Value]| -> J2Result<J2Value> {{");
+                    let _ = writeln!(out, "            if {guard} {{");
+                    out.push_str(&checks);
+                    let _ = writeln!(out, "                __call(__dyn.clone(), __a)\n            }} else {{ {name}__shim(__a) }}\n        }}), \"{name}\"), true)?;");
+                    let _ = writeln!(out, "        __globalize(env, \"{name}\");\n    }}");
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "    __bind(env, \"{n}\", J2Value::Builtin(std::sync::Arc::new(|__a: &[J2Value]| -> J2Result<J2Value> {{ {n}__shim(__a) }}), \"{n}\"), true)?;",
+                        n = name,
+                    );
+                    let _ = writeln!(out, "    __globalize(env, \"{}\");", name);
+                }
             }
             _ => lower_stmt_top(stmt, &mut out, 1),
         }
@@ -134,27 +192,42 @@ pub fn lower_program(prog: &Program) -> Lowered {
     Lowered { rust_src: out }
 }
 
-/// native selection result; inferred fns need fallback
+/// Determine the set of top-level functions that lower natively. A function
+/// qualifies iff it is a native candidate (fully annotated, single clause)
+/// *and* its body successfully lowers to native backend. Because a native
+/// function may call another, dropping one can invalidate its callers; we
+/// iterate to a fixpoint.
+/// Result of native selection: the signatures of every natively-lowered
+/// function, plus the subset that was *inferred* (unannotated) and therefore
+/// needs a runtime error-fallback dispatcher to preserve dynamic semantics.
 struct NativeSelection {
     fns: NativeFns,
     inferred: HashSet<String>,
     safe_gen: HashSet<String>,
     classes: Classes,
-    /// higher-order native fns; generic item, no shim
+    /// Higher-order native fns (≥1 function-typed parameter). These emit a
+    /// generic `impl Fn` native item for fast native→native calls but are
+    /// registered dynamically at the boundary (a runtime function *value*
+    /// can't be monomorphized), so they get no boxing shim.
     hof: HashSet<String>,
 }
 
-/// any param has a function type
+/// A native fn is higher-order if any parameter has a function type.
 fn is_hof_sig(sig: &FnSig) -> bool {
     sig.params.iter().any(|t| matches!(t, Ty::Func(..)))
 }
 
-/// `Copy` types; others cloned on read
+/// Whether a value of this type is `Copy` in the emitted backend. Non-`Copy`
+/// values (String / Vec / HashMap / structs) must be cloned on read so a
+/// value behind a shared borrow (`&self`, `&struct`) is never moved out.
 fn is_copy_ty(t: &Ty) -> bool {
     matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Nil)
 }
 
-/// Whether all class names in this type resolve to native classes.
+/// Whether every `Ty::Class(n)` mentioned (recursively) in `ty` names a
+/// *surviving* native class. Emitting a struct/helper reference for a class
+/// that was dropped from native selection produces non-compiling backend, so any
+/// type that fails this must bail to dynamic.
 fn class_refs_resolved(ty: &Ty, classes: &Classes) -> bool {
     match ty {
         Ty::Class(n) => classes.contains_key(n),
@@ -166,7 +239,9 @@ fn class_refs_resolved(ty: &Ty, classes: &Classes) -> bool {
     }
 }
 
-/// Copy scalar type for `Fn` bounds
+/// backend type for a `Copy` scalar used inside a closure's `Fn` bound. Only
+/// `Copy` scalars are admitted so fn-items and `move` closures compose
+/// cleanly as monomorphized function arguments.
 fn scalar_rust(t: &Ty) -> NRes<&'static str> {
     match t {
         Ty::Int => Ok("i64"),
@@ -176,7 +251,9 @@ fn scalar_rust(t: &Ty) -> NRes<&'static str> {
     }
 }
 
-/// native class sig, `None` if not candidate
+/// Collect a native-class signature from a `class { … }` literal, or `None`
+/// if it isn't a native candidate (has inheritance, untyped fields, or
+/// untyped/pattern method params).
 fn collect_class_sig(name: &str, fields: &[ClassField], methods: &[ClassMethod], extends: &[String]) -> Option<ClassSig> {
     if !extends.is_empty() {
         return None; // MVP: inheritance stays dynamic
@@ -184,7 +261,7 @@ fn collect_class_sig(name: &str, fields: &[ClassField], methods: &[ClassMethod],
     let mut field_sigs = Vec::with_capacity(fields.len());
     for f in fields {
         let ty = f.ty.clone()?; // every field must be typed
-        // Must have a representable backend type
+        // Must have a representable backend type (not Nil/Dyn).
         if rust_ty(&ty).ok().flatten().is_none() {
             return None;
         }
@@ -203,7 +280,11 @@ fn collect_class_sig(name: &str, fields: &[ClassField], methods: &[ClassMethod],
     Some(ClassSig { name: name.to_string(), fields: field_sigs, methods: method_sigs })
 }
 
-/// class-named `Ty::Var` to `Ty::Class`; tparams shadow
+/// Reclassify a `Ty::Var(name)` that actually names a native class as
+/// `Ty::Class(name)`. The parser emits `Ty::Var` for every bare-identifier
+/// type (it can't know class names at parse time); this resolves the nominal
+/// ones. A generic type param of the enclosing fn shadows a class name and is
+/// left untouched. Recurses through compound types.
 fn resolve_class_ty(ty: &Ty, class_names: &HashSet<String>, tparams: &[String]) -> Ty {
     match ty {
         Ty::Var(n) if class_names.contains(n) && !tparams.iter().any(|p| p == n) => {
@@ -226,7 +307,10 @@ fn resolve_class_ty(ty: &Ty, class_names: &HashSet<String>, tparams: &[String]) 
     }
 }
 
-/// normalize class types program-wide; dynamic classes untouched
+/// Run `resolve_class_ty` over every type annotation in the program. Returns a
+/// normalized clone so all downstream passes see `Ty::Class` for typed-class
+/// references. Only native-class candidates are reclassified, so dynamic
+/// (duck-typed) classes keep their current `Ty::Var` → dynamic behavior.
 fn normalize_class_types(prog: &Program) -> Program {
     let mut class_names: HashSet<String> = HashSet::new();
     for s in &prog.items {
@@ -280,7 +364,7 @@ fn normalize_class_types(prog: &Program) -> Program {
     out
 }
 
-/// Look up a top-level function's parameters, body, and type parameters.
+/// Lookup a top-level function's (params, body, type_params) by name.
 fn find_fn_def<'a>(prog: &'a Program, name: &str) -> Option<(&'a [Param], &'a FuncBody, &'a [String])> {
     prog.items.iter().find_map(|s| match s {
         Stmt::Func { name: n, params, body, type_params, .. } if n == name => {
@@ -290,7 +374,8 @@ fn find_fn_def<'a>(prog: &'a Program, name: &str) -> Option<(&'a [Param], &'a Fu
     })
 }
 
-/// explicit `<T>` or inferred `Ty::Var` in sig
+/// The effective generic variable for a function: an explicit `<T>` or an
+/// inferred `Ty::Var` in its signature.
 fn effective_var(sig: &FnSig, type_params: &[String]) -> Option<String> {
     if !type_params.is_empty() {
         Some(type_params[0].clone())
@@ -299,8 +384,21 @@ fn effective_var(sig: &FnSig, type_params: &[String]) -> Option<String> {
     }
 }
 
+/// Names with special native lowering must retain normal J2 shadowing even
+/// when a user's replacement cannot itself be lowered natively.
+fn native_builtin_name(name: &str) -> bool {
+    matches!(name, "map" | "filter" | "len" | "make_seq" | "copy" | "collect"
+        | "sqrt" | "abs" | "floor" | "ceil" | "round" | "exp" | "ln" | "log"
+        | "sin" | "cos" | "tan" | "pow" | "min" | "max" | "clamp"
+        | "contains" | "starts_with" | "ends_with" | "find" | "upper" | "lower"
+        | "trim" | "replace" | "split" | "join")
+}
+
 fn select_native_fns(prog: &Program) -> NativeSelection {
-    // J2_NO_NATIVE forces the pure dynamic-interpreter path
+    // J2_NO_NATIVE forces the pure dynamic-interpreter path (nothing lowers to
+    // native backend): every fn/class is registered dynamically. Used by the
+    // differential correctness harness as the reference oracle - native and
+    // native+parallel output must match this byte-for-byte.
     if std::env::var("J2_NO_NATIVE").map(|v| v == "1").unwrap_or(false) {
         return NativeSelection {
             fns: HashMap::new(),
@@ -310,14 +408,19 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
             hof: HashSet::new(),
         };
     }
-    // Count func definitions per name
+    // Count func definitions per name; multi-clause funcs can't be native.
     let mut counts: HashMap<String, usize> = HashMap::new();
     for s in &prog.items {
         if let Stmt::Func { name, .. } = s {
             *counts.entry(name.clone()).or_insert(0) += 1;
         }
     }
-    // annotated sigs seed; iterate for inferred fns
+    // Seed: annotated candidates use their declared signature (a contract,
+    // no fallback); everything else is *inferred* (native by default, with a
+    // dynamic fallback). Build the inferred set first using only the
+    // annotated sigs, then iterate so inferred fns can resolve calls to each
+    // other.
+    // Collect native-class candidates (Name = class { typed fields … }).
     let mut classes: Classes = HashMap::new();
     for s in &prog.items {
         if let Stmt::Bind { name, value: Expr::ClassLit { extends, fields, methods, .. }, .. } = s {
@@ -339,7 +442,8 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
             }
         }
     }
-    // Infer signatures for the rest
+    // Infer signatures for the rest (fixpoint, so call dependencies resolve).
+    // No lowering here - just collect candidate signatures.
     loop {
         let mut changed = false;
         for s in &prog.items {
@@ -358,7 +462,20 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
             break;
         }
     }
-    // fixpoint grows safe_gen, drops non-lowering candidates
+    // A user definition may shadow native builtins. Calls from native
+    // functions must not silently reinterpret a dynamic replacement as the
+    // builtin, especially when that replacement performs I/O or mutation.
+    let shadowed_builtins: HashSet<String> = prog.items.iter().filter_map(|stmt| {
+        let name = match stmt {
+            Stmt::Func { name, .. } | Stmt::Bind { name, .. } | Stmt::Global { name, .. } => name,
+            _ => return None,
+        };
+        native_builtin_name(name).then(|| name.clone())
+    }).collect();
+    // Combined fixpoint: grow `safe_gen` (generic fns whose *both*
+    // monomorphs lower - safe to call with a resolved monomorph) and drop
+    // any candidate that won't lower at all. Both use the current `safe_gen`
+    // so the analysis is internally consistent.
     let mut safe_gen: HashSet<String> = HashSet::new();
     loop {
         let mut changed = false;
@@ -388,7 +505,13 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
         for s in &prog.items {
             if let Stmt::Func { name, params, body, type_params, .. } = s {
                 if let Some(sig) = fns.get(name) {
-                    if lower_native_fn(name, params, body, sig, type_params, &fns, &safe_gen, &classes).is_err() {
+                    let mut refs = HashSet::new();
+                    match body {
+                        FuncBody::Expr(expr) => gather_all_idents(expr, &mut refs),
+                        FuncBody::Block(block) => for stmt in &block.stmts { gather_all_idents_stmt(stmt, &mut refs); },
+                    }
+                    if !refs.is_disjoint(&shadowed_builtins)
+                        || lower_native_fn(name, params, body, sig, type_params, &fns, &safe_gen, &classes).is_err() {
                         to_drop.push(name.clone());
                     }
                 }
@@ -400,11 +523,19 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
             safe_gen.remove(n);
             changed = true;
         }
-        // Drop classes whose struct/impl/boundary won't lower
+        // Drop classes whose struct/impl/boundary won't lower (→ dynamic).
         let class_names: Vec<String> = classes.keys().cloned().collect();
         for cn in &class_names {
             let csig = classes[cn].clone();
-            if lower_native_class(&csig, &fns, &safe_gen, &classes).is_err() {
+            let mut refs = HashSet::new();
+            for method in csig.methods.values() {
+                match &method.body {
+                    FuncBody::Expr(expr) => gather_all_idents(expr, &mut refs),
+                    FuncBody::Block(block) => for stmt in &block.stmts { gather_all_idents_stmt(stmt, &mut refs); },
+                }
+            }
+            if !refs.is_disjoint(&shadowed_builtins)
+                || lower_native_class(&csig, &fns, &safe_gen, &classes).is_err() {
                 classes.remove(cn);
                 changed = true;
             }
@@ -421,15 +552,28 @@ fn select_native_fns(prog: &Program) -> NativeSelection {
     NativeSelection { fns, inferred, safe_gen, classes, hof }
 }
 
-// outline hot top-level for-range loops natively
+// ───────────────────────── top-level loop outlining ─────────────────────────
+//
+// A hot loop at top level (the `main` body) runs in the interpreter today.
+// When its free variables have inferred concrete native types and its body
+// lowers natively, we outline it into a synthesized native fn and call it
+// across the boundary (unbox free vars → run native → rebox written seqs),
+// with a runtime fallback to the original dynamic loop if the unboxing
+// fails. v1 handles for-range loops that write seqs and read scalars/seqs
+// (the dominant array-transform pattern); scalar accumulators stay dynamic.
 
-/// Infer the types of top-level bindings
+/// Infer the types of top-level bindings (for outlining free-var typing).
 fn infer_top_gamma(prog: &Program, fns: &NativeFns) -> HashMap<String, Ty> {
     let mut ctx = typeck::TyCtx::new(fns);
     for s in &prog.items {
         if let Stmt::Bind { name, value, .. } | Stmt::Global { name, value, .. } = s {
             let t = typeck::synth(&ctx, value);
             ctx.gamma.insert(name.clone(), t);
+        }
+        if let Stmt::Func { name, .. } = s {
+            if native_builtin_name(name) {
+                ctx.gamma.insert(name.clone(), Ty::Dyn);
+            }
         }
     }
     ctx.gamma
@@ -447,11 +591,18 @@ fn gather_expr_refs(e: &Expr, refs: &mut HashSet<String>) {
         Expr::Pair(a, b) => { gather_expr_refs(a, refs); gather_expr_refs(b, refs); }
         Expr::SeqLit(items) => for it in items { gather_expr_refs(it, refs); },
         Expr::Pipe { lhs, rhs } | Expr::Filter { lhs, rhs } => { gather_expr_refs(lhs, refs); gather_expr_refs(rhs, refs); }
+        Expr::Lambda { .. } | Expr::CondLambda(_) => gather_all_idents(e, refs),
         _ => {}
     }
 }
 
-/// all identifiers recursively, for HOF capture check
+/// Collect EVERY identifier referenced anywhere in an expression, recursing
+/// into all sub-expression forms: including `MapLit`/`Block`/`Lambda`/
+/// `CondLambda`, which the shallow `gather_expr_refs` skips. Used by the HOF
+/// closure capture check, which must never miss a captured local (a missed
+/// non-Copy capture would emit a `move` closure that fails to compile). A
+/// nested lambda's own parameters are excluded from its contributed refs. The
+/// match is exhaustive so a new `Expr` variant forces this to be revisited.
 fn gather_all_idents(e: &Expr, refs: &mut HashSet<String>) {
     match e {
         Expr::Ident(n) => { refs.insert(n.clone()); }
@@ -476,9 +627,11 @@ fn gather_all_idents(e: &Expr, refs: &mut HashSet<String>) {
             for p in params { inner.remove(&p.name); }
             refs.extend(inner);
         }
-        // `Class::member` resolves class_name at runtime
+        // `Class::member` resolves `class_name` from the environment at runtime.
         Expr::StaticAccess { class_name, .. } => { refs.insert(class_name.clone()); }
-        // defaults and statics evaluate in enclosing scope
+        // A class literal's field defaults and static values are evaluated in
+        // the enclosing scope at definition time, so they can capture locals.
+        // (Method bodies get their own scope and are excluded.)
         Expr::ClassLit { fields, statics, .. } => {
             for f in fields {
                 if let Some(d) = &f.default { gather_all_idents(d, refs); }
@@ -540,7 +693,7 @@ fn gather_stmt_refs(
     match s {
         Stmt::Bind { name, value, .. } => {
             gather_expr_refs(value, refs);
-            // A fresh name is loop-local
+            // A fresh name is loop-local; rebinding adds a write we track.
             if !locals.contains(name) {
                 scalar_writes.insert(name.clone()); // may be a top-level reassign
                 locals.insert(name.clone());        // and is visible afterwards
@@ -558,9 +711,11 @@ fn gather_stmt_refs(
             gather_expr_refs(idx, refs);
             gather_expr_refs(value, refs);
         }
-        Stmt::ForLoop { bindings, iter, body, .. } => {
+        Stmt::ForLoop { bindings, iter, filter, until, body } => {
             for b in bindings { locals.insert(b.clone()); }
             gather_expr_refs(iter, refs);
+            if let Some(f) = filter { gather_expr_refs(f, refs); }
+            if let Some(u) = until { gather_expr_refs(u, refs); }
             for s in &body.stmts { gather_stmt_refs(s, refs, seq_writes, scalar_writes, locals); }
         }
         Stmt::If { cond, then_block, else_block } => {
@@ -575,12 +730,14 @@ fn gather_stmt_refs(
         Stmt::Loop { body } => for s in &body.stmts { gather_stmt_refs(s, refs, seq_writes, scalar_writes, locals); },
         Stmt::Stop { cond } | Stmt::Skip { cond } => { if let Some(c) = cond { gather_expr_refs(c, refs); } }
         Stmt::Expr(e) => gather_expr_refs(e, refs),
-        // other stmts just collect refs
+        // Anything else in a hot loop → the loop won't be outlined (handled
+        // by the native lowering trial failing), so just collect refs.
         _ => {}
     }
 }
 
-/// outline top-level for-range loop into native fn
+/// Try to outline a top-level for-range loop into a native fn. Returns the
+/// emitted fn item and the boundary call (with dynamic fallback) on success.
 fn try_outline_top_loop(
     idx: usize,
     for_stmt: &Stmt,
@@ -590,8 +747,10 @@ fn try_outline_top_loop(
     classes: &Classes,
 ) -> Option<(String, String)> {
     let Stmt::ForLoop { bindings, filter, until, body, .. } = for_stmt else { return None; };
-    if filter.is_some() || until.is_some() || bindings.len() != 1 { return None; }
-    // untyped literals default i32, huge bounds dynamic
+    if until.is_some() || bindings.len() != 1 { return None; }
+    // Untyped integer literals in the emitted range default to i32; a bound
+    // past i32::MAX would fail to compile natively. Keep such loops dynamic
+    // (the lazy flow path handles them in constant memory).
     if let Stmt::ForLoop { iter: Expr::Range { start, end: Some(end) }, .. } = for_stmt {
         let too_big = |e: &Expr| matches!(e, Expr::IntLit(n) if *n >= i32::MAX as i64);
         if too_big(start) || too_big(end) { return None; }
@@ -602,20 +761,25 @@ fn try_outline_top_loop(
     let mut scalar_writes = HashSet::new();
     let mut locals: HashSet<String> = bindings.iter().cloned().collect();
     if let Stmt::ForLoop { iter, .. } = for_stmt { gather_expr_refs(iter, &mut refs); }
+    if let Some(f) = filter { gather_expr_refs(f, &mut refs); }
     for s in &body.stmts {
         gather_stmt_refs(s, &mut refs, &mut seq_writes, &mut scalar_writes, &mut locals);
     }
-    // Scalar writes to top-level bindings are accumulators
+    // Scalar writes to top-level bindings are accumulators: passed by value
+    // and returned. v1 supports at most one (multiple would need a tuple).
     let mut accumulators: Vec<String> = scalar_writes
         .iter()
         .filter(|w| gamma.contains_key(*w))
         .cloned()
         .collect();
     accumulators.sort();
-    // cap accumulators; nested pair chain
+    // Accumulators return as a right-nested pair chain; keep the tuple sane.
     if accumulators.len() > 12 { return None; }
 
-    // free vars and accumulators, passed by value
+    // Free vars: referenced top-level bindings that aren't loop-local, PLUS
+    // top-level scalars the body reassigns (accumulators) - those are in
+    // `locals` (the rebind makes them body-visible) but must still be passed
+    // in by value so the loop starts from their current value.
     let mut names: Vec<String> = refs
         .iter()
         .filter(|r| gamma.contains_key(*r) && (!locals.contains(*r) || scalar_writes.contains(*r)))
@@ -641,13 +805,14 @@ fn try_outline_top_loop(
         param_names.push(n.clone());
         borrows.push(borrow);
     }
-    // accumulator types determine `ret`, scalar or 2-tuple
+    // Accumulators (scalar free vars) are returned; their types drive `ret`
+    // (a single scalar, or a 2-tuple for two accumulators).
     let acc_tys: Vec<Ty> = accumulators.iter().map(|a| gamma.get(a).cloned()).collect::<Option<_>>()?;
     let (ret, trailing): (Ty, Option<Expr>) = match accumulators.as_slice() {
         [] => (Ty::Nil, None),
         [a] => (acc_tys[0].clone(), Some(Expr::Ident(a.clone()))),
         _ => {
-            // N accumulators -> right-nested pairs
+            // N accumulators → right-nested pairs: (a, (b, (c, d))).
             let mut ty = acc_tys.last().unwrap().clone();
             let mut ex = Expr::Ident(accumulators.last().unwrap().clone());
             for (a, t) in accumulators.iter().zip(acc_tys.iter()).rev().skip(1) {
@@ -659,7 +824,8 @@ fn try_outline_top_loop(
     };
     let sig = FnSig { params, param_names, borrows, ret: ret.clone() };
     let fn_name = format!("__toploop_{idx}");
-    // loop plus trailing accumulator read for return
+    // The synthesized body is the loop, plus a trailing read of the
+    // accumulator(s) so the fn returns their final value(s).
     let mut stmts = vec![for_stmt.clone()];
     if let Some(t) = trailing {
         stmts.push(Stmt::Expr(t));
@@ -668,18 +834,30 @@ fn try_outline_top_loop(
     let body_block = FuncBody::Block(Block { stmts, stmt_lines });
     let fn_item = lower_native_fn_item(&fn_name, &body_block, &sig, fns, safe_gen, classes).ok()?;
 
-    // unbox, call native, rebox; dynamic fallback
+    // Boundary: unbox free vars, call native, rebox written seqs; fall back
+    // to the dynamic loop if unboxing fails (types not as inferred).
     let mut boundary = String::new();
     let _ = writeln!(boundary, "    {{");
-    let _ = writeln!(boundary, "        let __outline: J2Result<()> = (|| {{");
+    let _ = writeln!(boundary, "        let __outline: J2Result<()> = __native_result(|| {{");
+    // Native boundary copies must not erase read/write aliases. This matters
+    // especially for newly inferred collect(range) inputs: preserve sequential
+    // loop-carried dependencies by retaining the original dynamic loop.
+    for (i, a) in names.iter().enumerate() {
+        for (j, b) in names.iter().enumerate().skip(i + 1) {
+            if matches!(sig.params[i], Ty::Seq(_)) && matches!(sig.params[j], Ty::Seq(_))
+                && (sig.borrows[i] == Borrow::Mut || sig.borrows[j] == Borrow::Mut) {
+                let _ = writeln!(boundary, "            if __same_seq_storage(&__get(env, {a:?})?, &__get(env, {b:?})?) {{ return Err(J2Err::type_err(\"aliased native loop arguments\")); }}");
+            }
+        }
+    }
     for (n, (ty, b)) in names.iter().zip(sig.params.iter().zip(sig.borrows.iter())) {
         let unbox = match ty {
             Ty::Int => format!("unbox_i64(&__get(env, \"{n}\")?)?"),
             Ty::Float => format!("unbox_f64(&__get(env, \"{n}\")?)?"),
             Ty::Bool => format!("unbox_bool(&__get(env, \"{n}\")?)?"),
             Ty::Seq(e) => match e.as_ref() {
-                Ty::Float => format!("unbox_seq_f64(&__get(env, \"{n}\")?)?"),
-                Ty::Int => format!("unbox_seq_i64(&__get(env, \"{n}\")?)?"),
+                Ty::Float => format!("__unbox_exact_seq_f64(&__get(env, \"{n}\")?)?"),
+                Ty::Int => format!("__unbox_exact_seq_i64(&__get(env, \"{n}\")?)?"),
                 _ => return None,
             },
             _ => return None,
@@ -699,7 +877,11 @@ fn try_outline_top_loop(
     } else {
         let _ = writeln!(boundary, "            let __ol_ret = {fn_name}({});", call_args.join(", "));
     }
-    // Write accumulators back first
+    // Write accumulators back first: a rebind is the only writeback that can
+    // fail (a constant binding), so doing it before the seq rebox keeps the
+    // fallback path free of partial side effects. For N accumulators the
+    // return value is a right-nested pair chain: leaf k is `.1`×k then `.0`
+    // (the last leaf is all `.1`s).
     if !accumulators.is_empty() {
         let mut spine = String::from("__ol_ret");
         for (k, (a, t)) in accumulators.iter().zip(acc_tys.iter()).enumerate() {
@@ -724,7 +906,7 @@ fn try_outline_top_loop(
         }
     }
     let _ = writeln!(boundary, "            Ok(())");
-    let _ = writeln!(boundary, "        }})();");
+    let _ = writeln!(boundary, "        }});");
     let _ = writeln!(boundary, "        if __outline.is_err() {{");
     // Dynamic fallback: the original loop.
     if let Stmt::ForLoop { bindings, iter, filter, until, body } = for_stmt {
@@ -735,7 +917,11 @@ fn try_outline_top_loop(
     Some((fn_item, boundary))
 }
 
-/// outline seq/map-reading top-level binding into native fn
+/// Try to outline a top-level data-producing binding `name := value` (e.g.
+/// `r := data >> sqrt`) into a native fn `__topbind_N(freevars) -> RetTy`,
+/// run at the boundary and bound back into the env, with a dynamic fallback.
+/// Gated to bindings that read a seq/map free var (real data work) so
+/// trivial scalar bindings stay on the cheap dynamic path.
 fn try_outline_top_bind(
     idx: usize,
     name: &str,
@@ -746,6 +932,10 @@ fn try_outline_top_bind(
     safe_gen: &HashSet<String>,
     classes: &Classes,
 ) -> Option<(String, String)> {
+    // A direct binding aliases a J2 collection. Outlining would either return
+    // a borrowed slice/map where an owned result is required, or copy it and
+    // lose observable reference semantics. Retain the dynamic binding.
+    if matches!(value, Expr::Ident(_)) { return None; }
     let mut refs = HashSet::new();
     gather_expr_refs(value, &mut refs);
     let mut names: Vec<String> = refs.iter().filter(|r| gamma.contains_key(*r)).cloned().collect();
@@ -756,11 +946,11 @@ fn try_outline_top_bind(
     if !reads_data {
         return None;
     }
-    // synthesized result type must be native-representable
+    // Result type via synthesis; must be a representable native type.
     let mut tc = typeck::TyCtx::new(fns);
     tc.gamma = gamma.clone();
     let ret = typeck::synth(&tc, value);
-    rust_ty(&ret).ok()?.as_ref()?;  // bail unless ret has a backend type
+    rust_ty(&ret).ok()?.as_ref()?; // bail unless ret has a backend type (not Nil/Dyn)
     let boxed_ret = box_value(&ret, "__res")?;
 
     let mut params = Vec::new();
@@ -789,15 +979,15 @@ fn try_outline_top_bind(
 
     let mut b = String::new();
     let _ = writeln!(b, "    {{");
-    let _ = writeln!(b, "        let __outline: J2Result<()> = (|| {{");
+    let _ = writeln!(b, "        let __outline: J2Result<()> = __native_result(|| {{");
     for (n, (ty, _)) in names.iter().zip(sig.params.iter().zip(sig.borrows.iter())) {
         let unbox = match ty {
             Ty::Int => format!("unbox_i64(&__get(env, \"{n}\")?)?"),
             Ty::Float => format!("unbox_f64(&__get(env, \"{n}\")?)?"),
             Ty::Bool => format!("unbox_bool(&__get(env, \"{n}\")?)?"),
             Ty::Seq(e) => match e.as_ref() {
-                Ty::Float => format!("unbox_seq_f64(&__get(env, \"{n}\")?)?"),
-                Ty::Int => format!("unbox_seq_i64(&__get(env, \"{n}\")?)?"),
+                Ty::Float => format!("__unbox_exact_seq_f64(&__get(env, \"{n}\")?)?"),
+                Ty::Int => format!("__unbox_exact_seq_i64(&__get(env, \"{n}\")?)?"),
                 _ => return None,
             },
             Ty::Map(_, v) => match v.as_ref() {
@@ -821,7 +1011,7 @@ fn try_outline_top_bind(
     let _ = writeln!(b, "            __bind(env, \"{name}\", {boxed_ret}, {mutable})?;");
     let _ = writeln!(b, "            __globalize(env, \"{name}\");");
     let _ = writeln!(b, "            Ok(())");
-    let _ = writeln!(b, "        }})();");
+    let _ = writeln!(b, "        }});");
     let _ = writeln!(b, "        if __outline.is_err() {{");
     let _ = writeln!(b, "            __bind(env, \"{name}\", {{ let __v = {}; __v }}, {mutable})?;", lower_expr(value));
     let _ = writeln!(b, "            __globalize(env, \"{name}\");");
@@ -830,7 +1020,7 @@ fn try_outline_top_bind(
     Some((fn_item, b))
 }
 
-/// Box a native value of type `ty`
+/// Box a native value of type `ty` (held in `code`) into a `J2Value`.
 fn box_value(ty: &Ty, code: &str) -> Option<String> {
     Some(match ty {
         Ty::Float => format!("box_f64({code})"),
@@ -852,7 +1042,7 @@ fn box_value(ty: &Ty, code: &str) -> Option<String> {
     })
 }
 
-// statements
+// ────────────────────────────── statements ──────────────────────────────
 
 fn lower_stmt_top(stmt: &Stmt, out: &mut String, depth: usize) {
     let ind = "    ".repeat(depth);
@@ -913,7 +1103,7 @@ fn lower_stmt_top(stmt: &Stmt, out: &mut String, depth: usize) {
             let _ = writeln!(out, "{ind}__bind(env, \"{}\", {}, true)?;", name, body_src);
         }
         Stmt::Global { name, value, mutable } => {
-            // Global is a hint
+            // Global is a hint; in this simple transpiler we use one flat env.
             let _ = writeln!(
                 out,
                 "{ind}__bind(env, \"{}\", {}, {})?;",
@@ -968,7 +1158,9 @@ fn lower_stmt_top(stmt: &Stmt, out: &mut String, depth: usize) {
             }
         }
         Stmt::Give { value } => {
-            // `give` stashes value, returns GiveSignal to unwind
+            // `give` is an early return from a function block: stash the value
+            // in the give-slot and return the GiveSignal, which unwinds (past
+            // any `try`) to the enclosing function/lambda body wrapper.
             let v = match value { Some(v) => lower_expr(v), None => "J2Value::Null".to_string() };
             let _ = writeln!(out, "{ind}return Err(__give({}));", v);
         }
@@ -979,11 +1171,12 @@ fn lower_stmt_top(stmt: &Stmt, out: &mut String, depth: usize) {
             let _ = writeln!(out, "{ind}        Ok(())");
             let _ = writeln!(out, "{ind}    }})();");
             let _ = writeln!(out, "{ind}    if let Err(__err) = __res {{");
-            // A `give` signal must escape try/catch entirely
+            // A `give` signal must escape try/catch entirely (it is control
+            // flow, not an exception) - re-raise it to the function body.
             let _ = writeln!(out, "{ind}        if __err.is_give_signal() {{ return Err(__err); }}");
             let _ = writeln!(out, "{ind}        let __kind_name = __err.kind.name();");
             let _ = writeln!(out, "{ind}        let __handled = (|| -> J2Result<bool> {{");
-            // Class-typed handlers in order
+            // Class-typed handlers in order; first matching subclass wins.
             for h in typed_handlers {
                 let _ = writeln!(out, "{ind}            if __kind_matches(__kind_name, \"{}\") {{", h.class_name);
                 for s in &h.handler.stmts { lower_stmt_top(s, out, depth + 4); }
@@ -1034,13 +1227,17 @@ fn lower_for(
     depth: usize,
 ) {
     let ind = "    ".repeat(depth);
-    // body emitted once, spliced into both arms
+    // The per-iteration body (scope, bindings, filter, statements, until) is
+    // emitted once and spliced into both iteration arms below.
     let mut body_src = String::new();
     {
         let out = &mut body_src;
-        // per-iteration scope; body bindings dropped each iteration
+        // Per-iteration scope: bindings introduced by `=` or `:=` inside the
+        // body are removed at end-of-iteration so the next iteration can
+        // re-bind them with `=`. Matches scripting-language expectations.
         let _ = writeln!(out, "{ind}        let __scope_snap = __scope_enter(env);");
-        // bind loop vars; multiple expect pair
+        // Bind loop variables. Single binding: bind to elem. Multiple bindings:
+        // expect a pair / pair of seqs.
         if bindings.len() == 1 {
             let _ = writeln!(out, "{ind}        __bind(env, \"{}\", __elem.clone(), true)?;", bindings[0]);
         } else if bindings.len() == 2 {
@@ -1049,7 +1246,9 @@ fn lower_for(
             let _ = writeln!(out, "{ind}            __bind(env, \"{}\", __p.1.clone(), true)?;", bindings[1]);
             let _ = writeln!(out, "{ind}        }}");
         }
-        // `if filter` skips elements; fn filters auto-applied
+        // `if filter` - skip elements where filter is false. If `filter`
+        // evaluates to a function/builtin, auto-apply it to the current loop
+        // element (per spec §loops 2.3 - named cond / named func).
         if let Some(f) = filter {
             let _ = writeln!(
                 out,
@@ -1059,7 +1258,7 @@ fn lower_for(
         }
         // Body.
         for s in &body.stmts { lower_stmt_top(s, out, depth + 2); }
-        // `until` breaks after body once true
+        // `until` - break after evaluating body once the predicate becomes true.
         if let Some(u) = until {
             let _ = writeln!(out, "{ind}        if ({}).truthy() {{ __scope_leave(env, __scope_snap); break; }}", lower_expr(u));
         }
@@ -1068,7 +1267,8 @@ fn lower_for(
 
     let _ = writeln!(out, "{ind}{{");
     let _ = writeln!(out, "{ind}    let __iter = {};", lower_expr(iter));
-    // flows iterate lazily; others materialize
+    // A flow (range) iterates LAZILY - constant memory even for `1..1e9`.
+    // Everything else (seqs, text, pairs-of-seqs) materializes as before.
     let _ = writeln!(out, "{ind}    if let J2Value::Flow(__f) = &__iter {{");
     if until.is_none() {
         let _ = writeln!(out, "{ind}        if __f.lock().unwrap().is_infinite() {{ return Err(J2Err::infinite_flow(\"cannot consume an infinite flow without until\")); }}");
@@ -1087,12 +1287,16 @@ fn lower_for(
     let _ = writeln!(out, "{ind}}}");
 }
 
-/// IIFE body converting `give` signal to value
+/// Emit a block body for a dynamic function/lambda/method that supports
+/// `give` (early return). The statements run inside an IIFE; a `give` unwinds
+/// out of it as a GiveSignal which is caught here and converted to the given
+/// value (taken from the give-slot). Any real error propagates unchanged.
 fn emit_give_block(s: &mut String, b: &Block) {
     s.push_str("    let __res: J2Result<J2Value> = (|| -> J2Result<J2Value> {\n");
     let mut last_is_expr = false;
     for (i, st) in b.stmts.iter().enumerate() {
-        // track statement lines for in-function error reports
+        // Track the exact source line of each function-body statement so a
+        // runtime error reports inside the function, not just the call site.
         if let Some(&ln) = b.stmt_lines.get(i) {
             if ln > 0 { let _ = writeln!(s, "        __set_line({});", ln); }
         }
@@ -1113,7 +1317,7 @@ fn emit_give_block(s: &mut String, b: &Block) {
 }
 
 fn lower_func_body(params: &[Param], body: &FuncBody) -> String {
-    // Emit a J2Value::Func with one clause
+    // Emit a J2Value::Func with one clause. Pattern parameters are checked first.
     let mut s = String::new();
     s.push_str("J2Value::Func(std::sync::Arc::new(J2Func { name: String::from(\"<anon>\"), arity: ");
     let _ = write!(s, "{}", params.len());
@@ -1139,7 +1343,7 @@ fn lower_func_body(params: &[Param], body: &FuncBody) -> String {
     s.push_str("body: std::sync::Arc::new(|__args: &[J2Value]| -> J2Result<J2Value> {\n");
     s.push_str("    let env_rc = new_env_with_parent();\n");
     s.push_str("    let env: &EnvRef = &env_rc;\n");
-    // bind params as fresh shadowing locals
+    // bind params (fresh locals that shadow any same-named outer binding)
     for (i, p) in params.iter().enumerate() {
         if p.pattern.is_none() {
             let _ = write!(s, "    __bind_param(env, \"{}\", __args[{}].clone());\n", p.name, i);
@@ -1155,9 +1359,16 @@ fn lower_func_body(params: &[Param], body: &FuncBody) -> String {
     s
 }
 
-/// lower lambda with clone-snapshot capture of locals
+/// Lower an anonymous `func(...)` lambda EXPRESSION with lexical capture of
+/// its free variables (J's clone-snapshot semantics). `lower_func_body` handles
+/// top-level functions and methods, whose fresh environment sees only GLOBALS.
+/// A lambda must also see the enclosing function's locals. We snapshot each
+/// free variable's value at definition time and overlay it into the call-time
+/// env. Names not bound at definition (e.g. the lambda's own name for
+/// recursion, or functions defined later) are simply not captured and resolve
+/// live via GLOBALS at call time.
 fn lower_lambda_expr(params: &[Param], body: &FuncBody) -> String {
-    // free vars = body refs minus params
+    // Free variables = everything referenced in the body minus the params.
     let mut free: HashSet<String> = HashSet::new();
     match body {
         FuncBody::Expr(e) => gather_all_idents(e, &mut free),
@@ -1198,7 +1409,7 @@ fn lower_lambda_expr(params: &[Param], body: &FuncBody) -> String {
     s.push_str("body: std::sync::Arc::new(move |__args: &[J2Value]| -> J2Result<J2Value> {\n");
     s.push_str("    let env_rc = new_env_with_parent();\n");
     s.push_str("    let env: &EnvRef = &env_rc;\n");
-    // Overlay captured free vars
+    // Overlay captured free vars (they shadow globals; params shadow these).
     s.push_str("    for (__k, __v) in __cap.iter() { env.borrow_mut().table.insert(__k.clone(), (__v.clone(), true)); }\n");
     for (i, p) in params.iter().enumerate() {
         if p.pattern.is_none() {
@@ -1213,7 +1424,7 @@ fn lower_lambda_expr(params: &[Param], body: &FuncBody) -> String {
     s
 }
 
-// expressions
+// ────────────────────────────── expressions ──────────────────────────────
 
 fn lower_expr(e: &Expr) -> String {
     match e {
@@ -1299,7 +1510,7 @@ fn lower_expr(e: &Expr) -> String {
         }
         Expr::Pair(a, b) => format!("J2Value::pair({}, {})", lower_expr(a), lower_expr(b)),
         Expr::Pipe { lhs, rhs } => {
-            // map if seq/flow, else apply f(x)
+            // x >> f  ≡  if x is a seq/flow → map(x, f); else apply f(x).
             format!(
                 "__pipe({}, {})?",
                 lower_expr(lhs),
@@ -1322,7 +1533,7 @@ fn lower_expr(e: &Expr) -> String {
             s
         }
         Expr::CondLambda(inner) => {
-            // The body uses `_`
+            // The body uses `_`. We capture it into a closure: |x| -> bool { eval(_=x, inner) }.
             format!(
                 "J2Value::Cond(std::sync::Arc::new(|__x: &J2Value| -> J2Result<bool> {{ \
                     let env_rc = new_env_with_parent(); \
@@ -1334,7 +1545,10 @@ fn lower_expr(e: &Expr) -> String {
             )
         }
         Expr::Lambda { params, body } => {
-            // lambda with lexical capture, matching native HOF
+            // Anonymous function expression with lexical capture of its free
+            // variables (enclosing locals + globals), so a lambda passed into
+            // a higher-order helper sees the values visible where it was
+            // written - matching the native HOF path's capture behavior.
             lower_lambda_expr(params, body.as_ref())
         }
         Expr::NativeBlock(raw) => {
@@ -1382,7 +1596,7 @@ fn lower_expr(e: &Expr) -> String {
             s
         }
         Expr::StaticAccess { class_name, member } => {
-            // `Class::member` static lookup
+            // `Class::member` - look up the static member on the class.
             format!(
                 "__static_get(&__get(env, \"{}\")?, \"{}\")?",
                 class_name, member
@@ -1391,15 +1605,24 @@ fn lower_expr(e: &Expr) -> String {
     }
 }
 
-// Native lowering for the typed subset
+// ══════════════════════════════ native lowering ══════════════════════════════
+//
+// The typed subset (see J2_NATIVE_BACKEND_DESIGN.md). A native function
+// emits two backend items: the real `fn name__native(...)` over bare backend
+// types (which backend-cc optimizes and the MIR parallelizer matches), and a
+// `fn name__shim(args: &[J2Value])` boxing wrapper registered in the dynamic
+// env. Every native construct can *bail* (return `Err(())`); when it does,
+// the whole function falls back to dynamic lowering - so the typed path can
+// never break a program that the dynamic path would accept.
 
-/// native fn items plus boxing shim
+/// The backend items produced for one native function: the native fn item(s)
+/// (one, or two monomorphizations for a generic fn) plus the boxing shim.
 struct NativeEmit {
     items: String,
     shim: String,
 }
 
-/// A native class field
+/// A native class field: name + concrete type, in declaration order.
 #[derive(Clone)]
 struct ClassFieldSig {
     name: String,
@@ -1412,7 +1635,7 @@ struct ClassFieldSig {
 struct ClassMethodSig {
     params: Vec<(String, Ty)>,
     ret: Ty,
-    /// `&mut self` for `:=`, `&self` for `=`
+    /// `&mut self` (mutating, `:=`) vs `&self` (pure, `=`).
     borrow_self: Borrow,
     body: FuncBody,
 }
@@ -1427,41 +1650,64 @@ struct ClassSig {
 
 type Classes = HashMap<String, ClassSig>;
 
-/// native lowering context; types, usize locals, sigs
+/// Native lowering context: local type environment + the set of locals that
+/// are `usize` (loop induction variables and `len()`-derived bounds) + the
+/// known native fn signatures.
+#[derive(Clone)]
 struct NCtx<'a> {
     gamma: HashMap<String, Ty>,
     usize_vars: HashSet<String>,
-    /// seq bindings borrowable as `&mut [T]`
+    /// Seq bindings that can yield a `&mut [T]` (mutable params + owned
+    /// Vec locals). Needed to decide what may be passed by `&mut`.
     mut_seqs: HashSet<String>,
     fns: &'a NativeFns,
-    /// Generic functions whose integer and float monomorphizations both lower.
+    /// Generic functions whose *both* monomorphizations (f64 + i64) lower -
+    /// only these may be called from native code with a resolved monomorph
+    /// (otherwise we'd emit a call to a nonexistent fn). Non-generic callees
+    /// are always safe and aren't listed here.
     safe_gen: &'a HashSet<String>,
-    /// type of `_` in cond-lambda, else `None`
-    underscore: Option<Ty>,
-    /// Owned, non-`Copy` `String` locals
+    /// The type of the implicit `_` variable inside a cond-lambda body
+    /// (e.g. the element type in `seq ? (_ > 0)`); `None` outside one.
+    underscore: Option<(String, Ty)>,
+    /// Owned, non-`Copy` `String` locals (text locals; text *params* are
+    /// `&str` and `Copy`). Reads of these are cloned so reusing the value
+    /// never moves it: the clone-on-read discipline that makes non-`Copy`
+    /// values safe in the native path.
     owned_strings: HashSet<String>,
     /// Known native classes (struct lowering targets).
     classes: &'a Classes,
-    /// enclosing class; bare field names become `self.field`
+    /// When lowering a method body, the enclosing class: bare identifiers
+    /// that name a field resolve to `self.field`.
     self_fields: Option<&'a ClassSig>,
-    /// True inside a mutating (`:=`) method.
+    /// True inside a `:=` (mutating) method body: field writes allowed.
     self_mut: bool,
     ret: Ty,
-    /// hoisted loop-invariant lets; MIR matchers need `Operand::Copy`
+    /// Hoisted let-bindings to emit at the TOP of the function body (above any
+    /// loop). Used to lift loop-invariant scalar constants (e.g. `clamp`
+    /// bounds) into named locals, which the MIR idiom matchers require as
+    /// `Operand::Copy` rather than inline `Operand::Constant`. Flushed by each
+    /// function-body lowering site.
     prologue: Vec<String>,
-    /// counter for unique hoisted names
+    /// Counter for unique hoisted-binding names within one function body.
     tmp_ctr: usize,
-    /// Whether hoisting into `prologue` is allowed here
+    /// Whether hoisting into `prologue` is allowed here. True only at sites
+    /// that flush the prologue into the emitted body (so a hoist can never be
+    /// dropped); false inside single-expression lambda closures.
     can_hoist: bool,
-    /// Names assigned anywhere in the fn body
+    /// Newly admitted callbacks preserve checked J2 scalar arithmetic.
+    checked_scalars: bool,
+    /// Names assigned anywhere in the fn body (loop vars, `:=`/`++` targets).
+    /// A name NOT here is loop-invariant: safe to hoist its `as usize` cast.
+    /// `None` = not computed (no hoisting). Set per fn-body lowering.
     assigned: Option<HashSet<String>>,
-    /// CSE cache of hoisted `as usize` casts
+    /// CSE cache: invariant `name as usize` casts already hoisted to the
+    /// prologue, mapping the source name to its hoisted local.
     cast_hoist: HashMap<String, String>,
 }
 
 type NRes<T> = Result<T, ()>;
 
-/// let/return backend type; `Nil` gives `None`
+/// backend type for a `let`/return position. `Nil` → `None` (unit).
 fn rust_ty(ty: &Ty) -> NRes<Option<String>> {
     Ok(match ty {
         Ty::Int => Some("i64".into()),
@@ -1486,7 +1732,8 @@ fn rust_ty(ty: &Ty) -> NRes<Option<String>> {
     })
 }
 
-/// value type for native `map<text, V>`
+/// The backend value type for a native `map<text, V>` (keys are always String
+/// in J's runtime). Errors for non-text keys or non-scalar values.
 fn map_value_rust(k: &Ty, v: &Ty) -> NRes<&'static str> {
     if *k != Ty::Text {
         return Err(());
@@ -1498,7 +1745,7 @@ fn map_value_rust(k: &Ty, v: &Ty) -> NRes<&'static str> {
     }
 }
 
-/// param backend type honoring borrow mode
+/// backend type for a parameter, honoring its inferred borrow mode.
 fn param_rust_ty(ty: &Ty, borrow: Borrow) -> NRes<String> {
     Ok(match (ty, borrow) {
         (Ty::Int, Borrow::ByVal) => "i64".into(),
@@ -1530,7 +1777,7 @@ fn is_numeric(t: &Ty) -> bool {
     matches!(t, Ty::Int | Ty::Float)
 }
 
-/// compound-assignment operator for foldable op
+/// The backend compound-assignment operator for a foldable binary op, if any.
 fn compound_op_str(op: &BinOp) -> Option<&'static str> {
     match op {
         BinOp::Add => Some("+="),
@@ -1542,7 +1789,7 @@ fn compound_op_str(op: &BinOp) -> Option<&'static str> {
     }
 }
 
-/// box native scalar/text into `J2Value`
+/// Box a scalar/text native value of type `ty` into a `J2Value`.
 fn box_scalar(ty: &Ty, code: &str) -> NRes<String> {
     Ok(match ty {
         Ty::Float => format!("box_f64({code})"),
@@ -1553,7 +1800,8 @@ fn box_scalar(ty: &Ty, code: &str) -> NRes<String> {
     })
 }
 
-/// coerce types; only int to float implicit
+/// Coerce emitted code of type `from` into expected type `to`. Only the
+/// `int`→`float` widening is implicit (matching the design's coercion rule).
 fn coerce(code: String, from: &Ty, to: &Ty) -> NRes<String> {
     if from == to {
         return Ok(code);
@@ -1564,7 +1812,7 @@ fn coerce(code: String, from: &Ty, to: &Ty) -> NRes<String> {
     }
 }
 
-/// mangle backend reserved words (`move` to `move_`)
+/// Mangle backend reserved words used as J field/method names (`move` → `move_`).
 fn mangle(name: &str) -> String {
     matches!(
         name,
@@ -1577,7 +1825,10 @@ fn mangle(name: &str) -> String {
     .unwrap_or_else(|| name.to_string())
 }
 
-/// unbox field getter; bail unless class survives
+/// Unbox a `&J2Value` field getter expression into the field's backend type.
+/// A class-typed field requires the referenced class to be a *surviving*
+/// native class (its `unbox_instance_<n>` helper must be emitted); otherwise
+/// bail so the owning class falls back to dynamic.
 fn unbox_field_expr(ty: &Ty, getter: &str, classes: &Classes) -> NRes<String> {
     Ok(match ty {
         Ty::Float => format!("unbox_f64({getter})?"),
@@ -1600,7 +1851,8 @@ fn unbox_field_expr(ty: &Ty, getter: &str, classes: &Classes) -> NRes<String> {
     })
 }
 
-/// Box a struct-field value
+/// Box a struct-field value (`__p.field`) back into a `J2Value`. Same
+/// surviving-class requirement as `unbox_field_expr`.
 fn box_field_expr(ty: &Ty, code: &str, classes: &Classes) -> NRes<String> {
     Ok(match ty {
         Ty::Float => format!("box_f64({code})"),
@@ -1623,12 +1875,18 @@ fn box_field_expr(ty: &Ty, code: &str, classes: &Classes) -> NRes<String> {
     })
 }
 
-/// Emit a native class
+/// Emit a native class: `struct` + `impl` (methods) + per-class boundary
+/// helpers (`unbox_/box_/rebox_instance_<C>`). Returns the full module text,
+/// or `Err(())` to bail the class back to the dynamic `J2Value::Instance` path.
 fn lower_native_class(csig: &ClassSig, fns: &NativeFns, safe_gen: &HashSet<String>, classes: &Classes) -> NRes<String> {
     let cn = &csig.name;
     let mut out = String::new();
 
-    // bail unless every class ref survives natively
+    // Every class reference - in a field type, a method parameter, or a
+    // method return - must name a surviving native class, else we'd emit a
+    // dangling struct/helper reference. Bail otherwise so this class falls
+    // back to dynamic; the selection fixpoint reconverges (dropping the inner
+    // class drops this one on the next pass).
     for f in &csig.fields {
         if !class_refs_resolved(&f.ty, classes) {
             return Err(());
@@ -1653,7 +1911,7 @@ fn lower_native_class(csig: &ClassSig, fns: &NativeFns, safe_gen: &HashSet<Strin
     }
     let _ = writeln!(out, "}}");
 
-    // (b) impl with methods
+    // (b) impl with methods (field refs → self.field; `:=` → &mut self).
     let _ = writeln!(out, "#[allow(unused_mut, unused_variables, unused_parens, non_snake_case, dead_code)]\nimpl {cn} {{");
     for (mname, m) in &csig.methods {
         let self_p = if m.borrow_self == Borrow::Mut { "&mut self" } else { "&self" };
@@ -1687,6 +1945,7 @@ fn lower_native_class(csig: &ClassSig, fns: &NativeFns, safe_gen: &HashSet<Strin
             prologue: Vec::new(),
             tmp_ctr: 0,
             can_hoist: true,
+            checked_scalars: false,
             assigned: None,
             cast_hoist: HashMap::new(),
         };
@@ -1748,7 +2007,12 @@ fn lower_native_class(csig: &ClassSig, fns: &NativeFns, safe_gen: &HashSet<Strin
     Ok(out)
 }
 
-/// HOF as generic `Fn` item, zero-cost
+/// Lower a higher-order native fn to a generic item:
+/// `fn h__native<F0: Fn(..)->.., ...>(f0: F0, ..., regular: T) -> Ret { body }`.
+/// Each function-typed parameter becomes a generic `Fn` type param passed by
+/// value, so a fn-item (`g__native`) or a `move` closure inlines at the call
+/// site (backend's zero-cost monomorphization). Bails (→ dynamic) on any element
+/// genericity or a non-scalar function-parameter signature.
 fn lower_native_hof(
     native_name: &str,
     body: &FuncBody,
@@ -1784,7 +2048,10 @@ fn lower_native_hof(
                     o => scalar_rust(o)?.to_string(),
                 };
                 let g = format!("F{fi}");
-                // `Copy` first avoids parse ambiguity; allows reuse
+                // `Copy` (listed first to avoid the `-> R + Copy` parse
+                // ambiguity) lets a function parameter be passed/called more
+                // than once - fn-items and Copy-capturing `move` closures, the
+                // only forms we generate as arguments, are all `Copy`.
                 generics.push(format!("{g}: Copy + Fn({}) -> {}", arg_tys.join(", "), ret));
                 param_list.push(format!("{n}: {g}"));
                 fi += 1;
@@ -1799,7 +2066,7 @@ fn lower_native_hof(
         }
     }
     if generics.is_empty() {
-        return Err(());  // not actually a HOF - shouldn't happen
+        return Err(()); // not actually a HOF - shouldn't happen
     }
     let mut ctx = NCtx {
         gamma,
@@ -1816,6 +2083,7 @@ fn lower_native_hof(
         prologue: Vec::new(),
         tmp_ctr: 0,
         can_hoist: true,
+            checked_scalars: false,
         assigned: None,
         cast_hoist: HashMap::new(),
     };
@@ -1847,6 +2115,33 @@ fn lower_native_hof(
     ))
 }
 
+fn returns_collection_parameter(body: &FuncBody, sig: &FnSig) -> bool {
+    if !matches!(sig.ret, Ty::Seq(_) | Ty::Map(..)) { return false; }
+    let parameters: HashSet<&str> = sig.param_names.iter().zip(&sig.params)
+        .filter_map(|(name, ty)| matches!(ty, Ty::Seq(_) | Ty::Map(..)).then_some(name.as_str()))
+        .collect();
+    let aliases = |expr: &Expr| matches!(expr, Expr::Ident(name) if parameters.contains(name.as_str()));
+    fn gives_alias(block: &Block, parameters: &HashSet<&str>) -> bool {
+        block.stmts.iter().any(|stmt| match stmt {
+            Stmt::Give { value: Some(Expr::Ident(name)) } => parameters.contains(name.as_str()),
+            Stmt::If { then_block, else_block, .. } => gives_alias(then_block, parameters)
+                || else_block.as_ref().is_some_and(|block| gives_alias(block, parameters)),
+            Stmt::ForLoop { body, .. } | Stmt::Repeat { body, .. }
+            | Stmt::DoRepeat { body, .. } | Stmt::Loop { body } => gives_alias(body, parameters),
+            Stmt::Try { body, typed_handlers, default_handler } => gives_alias(body, parameters)
+                || typed_handlers.iter().any(|handler| gives_alias(&handler.handler, parameters))
+                || default_handler.as_ref().is_some_and(|block| gives_alias(block, parameters)),
+            // A nested function/lambda has its own return boundary.
+            _ => false,
+        })
+    }
+    match body {
+        FuncBody::Expr(expr) => aliases(expr),
+        FuncBody::Block(block) => gives_alias(block, &parameters)
+            || matches!(block.stmts.last(), Some(Stmt::Expr(expr)) if aliases(expr)),
+    }
+}
+
 fn lower_native_fn(
     name: &str,
     _params: &[Param],
@@ -1857,11 +2152,23 @@ fn lower_native_fn(
     safe_gen: &HashSet<String>,
     classes: &Classes,
 ) -> NRes<NativeEmit> {
-    // instance-aliasing guard; class in and out bails
+    // Native collection boundaries own their return values. Forwarding an
+    // input collection would either copy away J2's reference alias or return
+    // a borrowed Rust value where an owned result is required. Fresh map,
+    // filter, copy, and literal results remain eligible for native lowering.
+    if returns_collection_parameter(body, sig) { return Err(()); }
+    // Instance-aliasing guard: a fn that both takes and returns a class
+    // instance might forward an aliased parameter. The native boundary boxes
+    // the return into a fresh `Arc` (value semantics), which would diverge
+    // from the dynamic shared-reference semantics if the caller later mutates
+    // the original. Bail such fns to the dynamic interpreter, which preserves
+    // aliasing. (Constructing a *fresh* instance - no class parameter - is
+    // safe and stays native.)
     if matches!(sig.ret, Ty::Class(_)) && sig.params.iter().any(|t| matches!(t, Ty::Class(_))) {
         return Err(());
     }
-    // HOFs get generic item, no boxing shim
+    // Higher-order fns: one generic `impl Fn` item, no boxing shim (the
+    // dynamic boundary registers them via the interpreter).
     if is_hof_sig(sig) {
         if !type_params.is_empty() {
             return Err(()); // no element-genericity mixed with function params
@@ -1872,7 +2179,8 @@ fn lower_native_fn(
     if !type_params.is_empty() && type_params.len() != 1 {
         return Err(()); // only single explicit type params supported
     }
-    // The effective generic variable
+    // The effective generic variable: an explicit `<T>` or an inferred
+    // `Ty::Var` left in the signature (from unannotated numeric params).
     let var: Option<String> = if !type_params.is_empty() {
         Some(type_params[0].clone())
     } else {
@@ -1880,7 +2188,7 @@ fn lower_native_fn(
     };
     let var = match var {
         None => {
-            // non-generic; one item plus shim
+            // Non-generic: one native fn item + one boxing shim.
             let item = lower_native_fn_item(&format!("{name}__native"), body, sig, fns, safe_gen, classes)?;
             let shim = build_shim(name, sig, classes)?;
             return Ok(NativeEmit { items: item, shim });
@@ -1888,13 +2196,18 @@ fn lower_native_fn(
         Some(v) => v,
     };
     let var = &var;
-    // generic; monomorphize f64/i64, shim dispatches runtime type
+    // Generic: monomorphize over concrete element widths {f64, i64}. The
+    // boxing shim dispatches on the runtime element type of a representative
+    // argument.
+    // The representative parameter is the first whose type mentions `T`.
     let rep_idx = sig
         .params
         .iter()
         .position(|t| ty_mentions_var(t, var))
         .ok_or(())?;
-    // Emit only the monomorphizations that actually lower
+    // Emit only the monomorphizations that actually lower. A generic body
+    // may be valid for one width but not the other (e.g. a reduction whose
+    // accumulator starts at `0.0` is float-only). At least one must lower.
     let mut items = String::new();
     let mut have_f64 = false;
     let mut have_i64 = false;
@@ -1913,7 +2226,7 @@ fn lower_native_fn(
     Ok(NativeEmit { items, shim })
 }
 
-/// emit native fn item for concrete sig
+/// Emit a single native `fn <native_name>(...)` item for a concrete sig.
 fn lower_native_fn_item(
     native_name: &str,
     body: &FuncBody,
@@ -1935,7 +2248,8 @@ fn lower_native_fn_item(
         if matches!(t, Ty::Seq(_)) && *b == Borrow::Mut {
             mut_seqs.insert(n.clone());
         }
-        // A by-value `String` param would be non-Copy
+        // A by-value `String` param would be non-Copy; but text params are
+        // `&str` (Copy), so no param is an owned String here.
         let _ = &mut owned_strings;
     }
     let mut ctx = NCtx {
@@ -1953,6 +2267,7 @@ fn lower_native_fn_item(
         prologue: Vec::new(),
         tmp_ctr: 0,
         can_hoist: true,
+            checked_scalars: false,
         assigned: None,
         cast_hoist: HashMap::new(),
     };
@@ -1986,7 +2301,8 @@ fn lower_native_fn_item(
         if i > 0 {
             param_list.push_str(", ");
         }
-        // by-value scalars `mut` for accumulators, reassignment
+        // By-value scalar params are `mut` so they can serve as accumulators
+        // (and so a function may reassign its own parameter, which J allows).
         let mutkw = if *b == Borrow::ByVal { "mut " } else { "" };
         let _ = write!(param_list, "{}{}: {}", mutkw, n, param_rust_ty(t, *b)?);
     }
@@ -1994,7 +2310,22 @@ fn lower_native_fn_item(
         Some(rt) => format!(" -> {}", rt),
         None => String::new(),
     };
-    // parallelize attr behind cfg; J2_NO_NESTED kill-switch
+    // Opt into the float-associative MIR parallelizer when this kernel has
+    // a float-seq parameter. Gated behind `--cfg j2_parallelize` so the
+    // generated code still compiles under a stock backend-cc (the attribute is
+    // only known to the J fork); the default `j` build leaves it stripped.
+    //
+    // Nested-loop float matchers (matvec/conv1d/broadcast/axis-reduce/
+    // transpose) now fire by default. They were previously suppressed because
+    // matvec miscompiled - root cause: the matcher reads the inner-dimension
+    // operand at the OUTER loop's preheader, but the `N as usize` cast lived
+    // *inside* the loop, so it was dead there and the parallel helper received
+    // `n = 0` (→ wrote all zeros). Fixed by hoisting loop-invariant `as usize`
+    // dimension casts to the function prologue (see `nlower_index`). Verified
+    // correct against the dynamic oracle: the differential harness passes with
+    // these matchers enabled (matvec checksum 479989, all ML/nested tests).
+    // `J2_NO_NESTED=1` is a kill-switch that restores the old single-loop-only
+    // behavior (native-serial nested kernels) for bisecting/safety.
     let suppress_nested = std::env::var("J2_NO_NESTED").map(|v| v == "1").unwrap_or(false);
     let wants_attr = sig
         .params
@@ -2011,7 +2342,7 @@ fn lower_native_fn_item(
     ))
 }
 
-/// first generic var name in sig
+/// The first generic variable name appearing in a signature, if any.
 fn first_var_name(sig: &FnSig) -> Option<String> {
     fn find(ty: &Ty) -> Option<String> {
         match ty {
@@ -2026,7 +2357,9 @@ fn first_var_name(sig: &FnSig) -> Option<String> {
     sig.params.iter().find_map(find).or_else(|| find(&sig.ret))
 }
 
-/// nested loop present; withholds parallelize attr
+/// Whether a function body contains a loop nested inside another loop -
+/// the shape the (buggy/unverified) nested-loop float matchers claim. Used
+/// to withhold the parallelize opt-in attribute from such bodies.
 fn body_has_nested_loop(body: &FuncBody) -> bool {
     fn loop_in_stmts(stmts: &[Stmt]) -> bool {
         stmts.iter().any(stmt_has_loop)
@@ -2072,7 +2405,7 @@ fn ty_has_var(ty: &Ty) -> bool {
     }
 }
 
-/// does type mention generic `var`
+/// Whether a type mentions the generic variable `var`.
 fn ty_mentions_var(ty: &Ty, var: &str) -> bool {
     match ty {
         Ty::Var(v) => v == var,
@@ -2084,7 +2417,7 @@ fn ty_mentions_var(ty: &Ty, var: &str) -> bool {
     }
 }
 
-/// substitute `var` with `concrete` in `ty`
+/// Substitute the generic variable `var` with `concrete` throughout `ty`.
 fn subst_ty(ty: &Ty, var: &str, concrete: &Ty) -> Ty {
     match ty {
         Ty::Var(v) if v == var => concrete.clone(),
@@ -2108,31 +2441,107 @@ fn subst_sig(sig: &FnSig, var: &str, concrete: &Ty) -> FnSig {
     }
 }
 
-/// unbox/call/rebox/return statements of a shim
+/// Runtime sequence aliases cannot be represented by independently unboxed
+/// native arguments when either argument is mutated.
+fn native_seq_aliases(sig: &FnSig, args: &str) -> Vec<String> {
+    let mut checks = Vec::new();
+    for i in 0..sig.params.len() {
+        for j in i + 1..sig.params.len() {
+            if matches!(sig.params[i], Ty::Seq(_)) && matches!(sig.params[j], Ty::Seq(_))
+                && (sig.borrows[i] == Borrow::Mut || sig.borrows[j] == Borrow::Mut)
+            {
+                checks.push(format!("__same_seq_storage(&{args}[{i}], &{args}[{j}])"));
+            }
+        }
+    }
+    checks
+}
+
+fn native_float_dispatch(sig: &FnSig, args: &str, var: &str) -> NRes<String> {
+    let i = sig.params.iter().position(|ty| ty_mentions_var(ty, var)).ok_or(())?;
+    Ok(format!("match &{args}[{i}] {{ J2Value::Seq(__s) => matches!(__s.lock().unwrap().items.first(), Some(J2Value::Float(_))), J2Value::SeqF64(_) | J2Value::Float(_) => true, _ => false }}"))
+}
+
+/// Representation-only fallbacks preserve valid numeric inputs without
+/// silently rounding or changing element types when sequences are unboxed.
+fn native_boundary_fallback(sig: &FnSig, args: &str) -> Option<String> {
+    let mut checks = native_seq_aliases(sig, args);
+    let generic_float = first_var_name(sig)
+        .and_then(|var| native_float_dispatch(sig, args, &var).ok());
+    for (i, ty) in sig.params.iter().enumerate() {
+        let Ty::Seq(elem) = ty else { continue };
+        let mixed_float = format!("matches!(&{args}[{i}], J2Value::Seq(__s) if __s.lock().unwrap().items.iter().any(|__v| !matches!(__v, J2Value::Float(_))))");
+        let mixed_int = format!("match &{args}[{i}] {{ J2Value::Seq(__s) => __s.lock().unwrap().items.iter().any(|__v| !matches!(__v, J2Value::Int(_))), J2Value::SeqF64(_) => true, _ => false }}");
+        match elem.as_ref() {
+            Ty::Float => checks.push(mixed_float),
+            Ty::Int => checks.push(format!("({mixed_int})")),
+            Ty::Var(_) => {
+                if let Some(dispatch) = &generic_float {
+                    checks.push(format!("(if {dispatch} {{ {mixed_float} }} else {{ {mixed_int} }})"));
+                }
+            }
+            _ => {}
+        }
+    }
+    if checks.is_empty() { None }
+    else { Some(format!("{args}.len() == {} && ({})", sig.params.len(), checks.join(" || "))) }
+}
+
+fn native_unbox_arg(ty: &Ty, value: &str, exact_numeric: bool, classes: &Classes) -> NRes<String> {
+    let helper = match ty {
+        Ty::Int => "unbox_i64".to_string(),
+        Ty::Float => "unbox_f64".to_string(),
+        Ty::Bool => "unbox_bool".to_string(),
+        Ty::Text => "unbox_text".to_string(),
+        Ty::Seq(elem) => match elem.as_ref() {
+            Ty::Float if exact_numeric => "__unbox_exact_seq_f64".to_string(),
+            Ty::Float => "unbox_seq_f64".to_string(),
+            Ty::Int if exact_numeric => "__unbox_exact_seq_i64".to_string(),
+            Ty::Int => "unbox_seq_i64".to_string(),
+            Ty::Text => "unbox_seq_text".to_string(),
+            _ => return Err(()),
+        },
+        Ty::Map(_, elem) => match elem.as_ref() {
+            Ty::Float => "unbox_map_f64".to_string(),
+            Ty::Int => "unbox_map_i64".to_string(),
+            _ => return Err(()),
+        },
+        Ty::Class(name) if classes.contains_key(name) => format!("unbox_instance_{name}"),
+        _ => return Err(()),
+    };
+    Ok(format!("{helper}({value})?"))
+}
+
+/// Validate annotated fallback calls with the same accepted types as the
+/// original shim. Representation/alias guards must not swallow type errors.
+fn native_validate_args(sig: &FnSig, args: &str, ind: &str, classes: &Classes) -> NRes<String> {
+    if let Some(var) = first_var_name(sig) {
+        let dispatch = native_float_dispatch(sig, args, &var)?;
+        let nested_ind = format!("{ind}    ");
+        let f64_checks = native_validate_args(&subst_sig(sig, &var, &Ty::Float), args, &nested_ind, classes)?;
+        let i64_checks = native_validate_args(&subst_sig(sig, &var, &Ty::Int), args, &nested_ind, classes)?;
+        return Ok(format!("{ind}if {dispatch} {{\n{f64_checks}{ind}}} else {{\n{i64_checks}{ind}}}\n"));
+    }
+    let mut checks = String::new();
+    for (i, ty) in sig.params.iter().enumerate() {
+        let expr = native_unbox_arg(ty, &format!("&{args}[{i}]"), false, classes)?;
+        let _ = writeln!(checks, "{ind}let _ = {expr};");
+    }
+    Ok(checks)
+}
+
+/// The unbox / call / rebox / return statements of a boxing shim, each line
+/// prefixed with `ind`. `native_name` is the concrete fn to call.
 fn shim_body(native_name: &str, sig: &FnSig, ind: &str, classes: &Classes) -> NRes<String> {
     let mut s = String::new();
-    for (i, (t, b)) in sig.params.iter().zip(sig.borrows.iter()).enumerate() {
-        match (t, b) {
-            (Ty::Int, _) => { let _ = writeln!(s, "{ind}let a{i} = unbox_i64(&__args[{i}])?;"); }
-            (Ty::Float, _) => { let _ = writeln!(s, "{ind}let a{i} = unbox_f64(&__args[{i}])?;"); }
-            (Ty::Bool, _) => { let _ = writeln!(s, "{ind}let a{i} = unbox_bool(&__args[{i}])?;"); }
-            (Ty::Text, _) => { let _ = writeln!(s, "{ind}let a{i} = unbox_text(&__args[{i}])?;"); }
-            (Ty::Seq(e), _) => match e.as_ref() {
-                Ty::Float => { let _ = writeln!(s, "{ind}let mut a{i} = unbox_seq_f64(&__args[{i}])?;"); }
-                Ty::Int => { let _ = writeln!(s, "{ind}let mut a{i} = unbox_seq_i64(&__args[{i}])?;"); }
-                Ty::Text => { let _ = writeln!(s, "{ind}let mut a{i} = unbox_seq_text(&__args[{i}])?;"); }
-                _ => return Err(()),
-            },
-            (Ty::Map(_, v), _) => match v.as_ref() {
-                Ty::Float => { let _ = writeln!(s, "{ind}let mut a{i} = unbox_map_f64(&__args[{i}])?;"); }
-                Ty::Int => { let _ = writeln!(s, "{ind}let mut a{i} = unbox_map_i64(&__args[{i}])?;"); }
-                _ => return Err(()),
-            },
-            (Ty::Class(n), _) if classes.contains_key(n) => {
-                let _ = writeln!(s, "{ind}let mut a{i} = unbox_instance_{n}(&__args[{i}])?;");
-            }
-            _ => return Err(()),
-        }
+    let aliases = native_seq_aliases(sig, "__args");
+    if !aliases.is_empty() {
+        let _ = writeln!(s, "{ind}if {} {{ return Err(J2Err::type_err(\"aliased native function arguments\")); }}", aliases.join(" || "));
+    }
+    for (i, ty) in sig.params.iter().enumerate() {
+        let expr = native_unbox_arg(ty, &format!("&__args[{i}]"), true, classes)?;
+        let mutable = if matches!(ty, Ty::Seq(_) | Ty::Map(..) | Ty::Class(_)) { "mut " } else { "" };
+        let _ = writeln!(s, "{ind}let {mutable}a{i} = {expr};");
     }
     let mut call_args = String::new();
     for (i, (t, b)) in sig.params.iter().zip(sig.borrows.iter()).enumerate() {
@@ -2144,30 +2553,31 @@ fn shim_body(native_name: &str, sig: &FnSig, ind: &str, classes: &Classes) -> NR
             _ => { let _ = write!(call_args, "a{i}"); }
         }
     }
-    if sig.ret == Ty::Nil {
-        let _ = writeln!(s, "{ind}{native_name}({call_args});");
-    } else {
-        let _ = writeln!(s, "{ind}let __ret = {native_name}({call_args});");
-    }
+    let _ = writeln!(s, "{ind}let __outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {native_name}({call_args})));");
+    let _ = writeln!(s, "{ind}let __writeback: J2Result<()> = Ok(());");
     for (i, (t, b)) in sig.params.iter().zip(sig.borrows.iter()).enumerate() {
         match (t, b) {
             (Ty::Seq(e), Borrow::Mut) => match e.as_ref() {
-                Ty::Float => { let _ = writeln!(s, "{ind}rebox_seq_f64(&__args[{i}], a{i})?;"); }
-                Ty::Int => { let _ = writeln!(s, "{ind}rebox_seq_i64(&__args[{i}], a{i})?;"); }
-                Ty::Text => { let _ = writeln!(s, "{ind}rebox_seq_text(&__args[{i}], a{i})?;"); }
+                Ty::Float => { let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_seq_f64(&__args[{i}], a{i}));"); }
+                Ty::Int => { let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_seq_i64(&__args[{i}], a{i}));"); }
+                Ty::Text => { let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_seq_text(&__args[{i}], a{i}));"); }
                 _ => return Err(()),
             },
             (Ty::Map(_, v), Borrow::Mut) => match v.as_ref() {
-                Ty::Float => { let _ = writeln!(s, "{ind}rebox_map_f64(&__args[{i}], a{i})?;"); }
-                Ty::Int => { let _ = writeln!(s, "{ind}rebox_map_i64(&__args[{i}], a{i})?;"); }
+                Ty::Float => { let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_map_f64(&__args[{i}], a{i}));"); }
+                Ty::Int => { let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_map_i64(&__args[{i}], a{i}));"); }
                 _ => return Err(()),
             },
             (Ty::Class(n), Borrow::Mut) if classes.contains_key(n) => {
-                let _ = writeln!(s, "{ind}rebox_instance_{n}(&__args[{i}], a{i})?;");
+                let _ = writeln!(s, "{ind}let __writeback = __writeback.and(rebox_instance_{n}(&__args[{i}], a{i}));");
             }
             _ => {}
         }
     }
+    // All mutations preceding a failure remain visible. Resume the original
+    // payload after write-back so inferred dispatch never replays the body.
+    let _ = writeln!(s, "{ind}let __ret = match __outcome {{ Ok(value) => value, Err(payload) => std::panic::resume_unwind(payload) }};");
+    let _ = writeln!(s, "{ind}__writeback?;");
     let ret_box = match &sig.ret {
         Ty::Nil => "Ok(J2Value::Null)".to_string(),
         Ty::Float => "Ok(box_f64(__ret))".to_string(),
@@ -2213,7 +2623,11 @@ fn build_shim(name: &str, sig: &FnSig, classes: &Classes) -> NRes<String> {
     Ok(s)
 }
 
-/// The dispatching shim for a generic fn
+/// The dispatching shim for a generic fn: detect the runtime element type
+/// of the representative argument and call the matching monomorphization.
+/// `have_f64`/`have_i64` say which monomorphs were actually emitted; an
+/// absent one yields `Err` (→ the inferred-fn dispatcher falls back to the
+/// interpreter; for an annotated generic it surfaces as a type error).
 fn build_generic_shim(
     name: &str,
     sig: &FnSig,
@@ -2245,7 +2659,7 @@ fn build_generic_shim(
     );
     let _ = writeln!(s, "    let __is_float = match &__args[{rep_idx}] {{");
     let _ = writeln!(s, "        J2Value::Seq(__s) => matches!(__s.lock().unwrap().items.first(), Some(J2Value::Float(_))),");
-    let _ = writeln!(s, "        J2Value::Float(_) => true,");
+    let _ = writeln!(s, "        J2Value::SeqF64(_) | J2Value::Float(_) => true,");
     let _ = writeln!(s, "        _ => false,");
     let _ = writeln!(s, "    }};");
     let _ = writeln!(s, "    if __is_float {{");
@@ -2257,7 +2671,8 @@ fn build_generic_shim(
     Ok(s)
 }
 
-/// Lower a native function block
+/// Lower a native function block: every statement, with the last expression
+/// (for a non-nil return) emitted as the tail value.
 fn nlower_fn_block(ctx: &mut NCtx<'_>, stmts: &[Stmt], out: &mut String, depth: usize) -> NRes<()> {
     let last = stmts.len().wrapping_sub(1);
     for (i, s) in stmts.iter().enumerate() {
@@ -2272,14 +2687,17 @@ fn nlower_fn_block(ctx: &mut NCtx<'_>, stmts: &[Stmt], out: &mut String, depth: 
         }
         nlower_stmt(ctx, s, out, depth)?;
     }
-    // non-nil return without value or `give` bails
+    // A non-nil return with no trailing value expression and no `give` is
+    // not something we can soundly emit - bail to dynamic.
     if ctx.ret != Ty::Nil && !block_returns(stmts) {
         return Err(());
     }
     Ok(())
 }
 
-/// conservative check all paths return via `give`
+/// Conservative check that every path through the block returns via `give`.
+/// Used only to decide whether a value-returning fn without a trailing
+/// expression is acceptable (otherwise we bail to dynamic).
 fn block_returns(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::Give { .. } => true,
@@ -2291,7 +2709,8 @@ fn block_returns(stmts: &[Stmt]) -> bool {
 }
 
 fn nlower_block_scoped(ctx: &mut NCtx<'_>, b: &Block, out: &mut String, depth: usize) -> NRes<()> {
-    // snapshot/restore gamma; block bindings don't leak
+    // Block-local bindings must not leak into the enclosing gamma (backend
+    // scopes them anyway). Snapshot and restore.
     let saved_g = ctx.gamma.clone();
     let saved_u = ctx.usize_vars.clone();
     for s in &b.stmts {
@@ -2306,7 +2725,13 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
     let ind = "    ".repeat(depth);
     match s {
         Stmt::Bind { name, value, mutable } => {
-            // field write in method; mutating `:=` only
+            if let Expr::Ident(source) = value {
+                if matches!(ctx.gamma.get(source), Some(Ty::Seq(_) | Ty::Map(..) | Ty::Class(_))) {
+                    return Err(()); // J2 reference aliases cannot become owned native copies.
+                }
+            }
+            // Inside a method, `field = expr` writes the instance field. Only
+            // allowed in a `:=` (mutating) method; a pure method bails.
             if !ctx.gamma.contains_key(name) {
                 if let Some(csig) = ctx.self_fields {
                     if let Some(f) = csig.fields.iter().find(|f| f.name == *name) {
@@ -2324,7 +2749,9 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             if ctx.gamma.contains_key(name) {
                 // Reassignment of an existing native local.
                 let target = ctx.gamma.get(name).cloned().unwrap();
-                // peephole to `acc OP= rhs` for reductions
+                // Compound peephole: `acc = acc OP rhs` → `acc OP= rhs`
+                // (and commutative `acc = rhs OP acc`). Keeps reductions and
+                // matvec inner loops in the canonical accumulator shape.
                 if let Expr::Binary { op, lhs, rhs } = value {
                     if let Some(opc) = compound_op_str(op) {
                         let is_self = |e: &Expr| matches!(e, Expr::Ident(n) if n == name);
@@ -2347,7 +2774,7 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
                 let c = coerce(code, &ty, &target)?;
                 let _ = writeln!(out, "{ind}{name} = {c};");
             } else {
-                // `n = len(s)` makes usize length local
+                // `n := len(s)` / `n = len(s)` → a usize length local.
                 if let Some(seq_code) = match_len_call(ctx, value)? {
                     let _ = writeln!(out, "{ind}let mut {name} = {seq_code}.len();");
                     ctx.gamma.insert(name.clone(), Ty::Int);
@@ -2356,11 +2783,11 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
                     let (code, ty) = nlower_expr(ctx, value)?;
                     let rt = rust_ty(&ty)?.ok_or(())?;
                     let _ = writeln!(out, "{ind}let mut {name}: {rt} = {code};");
-                    // owned seq local is `&mut`-borrowable
+                    // An owned seq local is mutable and `&mut`-borrowable.
                     if matches!(ty, Ty::Seq(_)) {
                         ctx.mut_seqs.insert(name.clone());
                     }
-                    // owned String is non-Copy; clone on read
+                    // An owned String local is non-`Copy` → clone on read.
                     if ty == Ty::Text {
                         ctx.owned_strings.insert(name.clone());
                     }
@@ -2388,12 +2815,12 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             Ok(())
         }
         Stmt::IndexedAssign { target, idx, value } => {
-            // target must be seq or map identifier
+            // target must be an identifier bound to a seq or map.
             let tname = match target {
                 Expr::Ident(n) => n.clone(),
                 _ => return Err(()),
             };
-            // map<text,V> index write is insert
+            // `m[key] = v` on a map<text,V> → insert.
             if let Some(Ty::Map(_, v)) = ctx.gamma.get(&tname).cloned() {
                 let key = nlower_map_key_owned(ctx, idx)?;
                 let (vc, vt) = nlower_expr(ctx, value)?;
@@ -2406,17 +2833,19 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
                 _ => return Err(()),
             };
             let idx_code = nlower_index(ctx, idx)?;
-            // seq<text> index write stores owned String
+            // `words[i] = v` on a seq<text> → store an owned String.
             if elem == Ty::Text {
                 let (vc, vt) = nlower_expr(ctx, value)?;
                 if vt != Ty::Text { return Err(()); }
                 let _ = writeln!(out, "{ind}{tname}[{idx_code}] = ({vc}).to_string();");
                 return Ok(());
             }
-            // peephole to `s[i] OP= rhs`; slice matchers
+            // Compound-assignment peephole: `s[i] = s[i] OP rhs` → `s[i] OP= rhs`
+            // (and, for commutative `+`/`*`, `s[i] = rhs OP s[i]`). This is
+            // what the slice matchers want (axpy `+=`, scale `*=`, …).
             if let Expr::Binary { op, lhs, rhs } = value {
                 if let Some(opc) = compound_op_str(op) {
-                    // is `e` exactly `s[idx]`
+                    // Is `e` exactly `s[idx]` for the same s and index?
                     let mut is_self = |e: &Expr, ctx: &mut NCtx<'_>| -> bool {
                         if let Expr::Index { coll, idx: lidx } = e {
                             if matches!(coll.as_ref(), Expr::Ident(n) if *n == tname) {
@@ -2448,6 +2877,7 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             Ok(())
         }
         Stmt::ForLoop { bindings, iter, filter, until, body } => {
+            if parallel_loops::try_lower(ctx, s, out, depth) { return Ok(()); }
             if bindings.len() != 1 || filter.is_some() || until.is_some() {
                 return Err(());
             }
@@ -2455,8 +2885,22 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             let saved_g = ctx.gamma.clone();
             let saved_u = ctx.usize_vars.clone();
             match iter {
-                // for-range over usize, J-inclusive bounds
+                // for-range: `for i in a..b` (J-inclusive) over usize i.
                 Expr::Range { start, end: Some(end) } => {
+                    let signed_literal = |e: &Expr| match e {
+                        Expr::IntLit(n) => Some(*n),
+                        Expr::Unary { op: UnaryOp::Neg, operand } => match operand.as_ref() {
+                            Expr::IntLit(n) => n.checked_neg(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let a = signed_literal(start);
+                    let b = signed_literal(end);
+                    if a.is_some_and(|v| v < 0) || b.is_some_and(|v| v < 0)
+                        || matches!((a, b), (Some(a), Some(b)) if a > b) {
+                        return Err(());
+                    }
                     let lo = nlower_index(ctx, start)?;
                     let hi = inclusive_upper(ctx, end)?;
                     let _ = writeln!(out, "{ind}for {i} in {lo}..{hi} {{");
@@ -2464,7 +2908,9 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
                     ctx.usize_vars.insert(i.clone());
                     for st in &body.stmts { nlower_stmt(ctx, st, out, depth + 1)?; }
                 }
-                // for-each over a seq
+                // for-each over a seq: `for x in s` → index loop binding the
+                // element. Enables reductions / element scans natively. The
+                // slice is bound once (borrowed) to avoid re-evaluation.
                 _ => {
                     let (sc, st) = nlower_expr(ctx, iter)?;
                     let elem = match st { Ty::Seq(e) => *e, _ => return Err(()) };
@@ -2541,7 +2987,7 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             }
             Ok(())
         }
-        // map<text,V> field write is insert
+        // `m.field = v` on a map<text,V> → insert.
         Stmt::MemberAssign { target, field, value } => {
             let tname = match target { Expr::Ident(n) => n.clone(), _ => return Err(()) };
             let v = match ctx.gamma.get(&tname).cloned() {
@@ -2558,12 +3004,14 @@ fn nlower_stmt(ctx: &mut NCtx<'_>, s: &Stmt, out: &mut String, depth: usize) -> 
             let _ = writeln!(out, "{ind}let _ = {code};");
             Ok(())
         }
-        // everything else bails to dynamic
+        // Everything else (classes, try, …) bails to dynamic lowering.
         _ => Err(()),
     }
 }
 
-/// map read key as `&str` operand
+/// Lower a text key for HashMap *reads* → a `&str` index operand. A literal
+/// becomes `"lit"`; any other text expr becomes `&(expr)[..]` (works for both
+/// `String` locals and `&str` params).
 fn nlower_map_key(ctx: &mut NCtx<'_>, idx: &Expr) -> NRes<String> {
     if let Expr::TextLit(s) = idx {
         return Ok(format!("{:?}", s));
@@ -2575,7 +3023,7 @@ fn nlower_map_key(ctx: &mut NCtx<'_>, idx: &Expr) -> NRes<String> {
     Ok(format!("&({})[..]", kc))
 }
 
-/// map insert key as owned `String`
+/// Lower a text key for HashMap *inserts* → an owned `String`.
 fn nlower_map_key_owned(ctx: &mut NCtx<'_>, idx: &Expr) -> NRes<String> {
     if let Expr::TextLit(s) = idx {
         return Ok(format!("String::from({:?})", s));
@@ -2587,7 +3035,8 @@ fn nlower_map_key_owned(ctx: &mut NCtx<'_>, idx: &Expr) -> NRes<String> {
     Ok(format!("({}).to_string()", kc))
 }
 
-/// type peek without emission; picks generic monomorph
+/// Lightweight type peek (no code emission): used to resolve which
+/// monomorph of a generic callee to invoke at a native call site.
 fn peek_ty(ctx: &NCtx<'_>, e: &Expr) -> Ty {
     match e {
         Expr::IntLit(_) => Ty::Int,
@@ -2613,7 +3062,7 @@ fn peek_ty(ctx: &NCtx<'_>, e: &Expr) -> Ty {
             }
         }
         Expr::Index { coll, idx } => {
-            // Sub-slice `coll[a..b]` keeps the seq type
+            // Sub-slice `coll[a..b]` keeps the seq type; plain index unwraps.
             let is_slice = matches!(idx.as_ref(), Expr::Range { .. });
             match peek_ty(ctx, coll) {
                 Ty::Seq(e) => if is_slice { Ty::Seq(e) } else { *e },
@@ -2646,11 +3095,11 @@ fn peek_ty(ctx: &NCtx<'_>, e: &Expr) -> Ty {
     }
 }
 
-/// if `e` is `len(seq)`, return seq code
+/// If `e` is exactly `len(<seq-expr>)`, return the lowered seq code.
 fn match_len_call(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<Option<String>> {
     if let Expr::Call { callee, args } = e {
         if let Expr::Ident(f) = callee.as_ref() {
-            if f == "len" && args.len() == 1 {
+            if f == "len" && args.len() == 1 && !ctx.gamma.contains_key(f) && !ctx.fns.contains_key(f) {
                 let (sc, st) = nlower_expr(ctx, &args[0])?;
                 if matches!(st, Ty::Seq(_) | Ty::Text) {
                     return Ok(Some(sc));
@@ -2661,7 +3110,11 @@ fn match_len_call(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<Option<String>> {
     Ok(None)
 }
 
-/// Collect every name assigned anywhere in `stmts`
+/// Collect every name assigned anywhere in `stmts` (recursively): `=`/`:=`
+/// binds, compound-assigns, `++`/`--`, `global`, and loop variables. Names NOT
+/// collected are loop-invariant. Over-approximates (recurses into all nested
+/// bodies, including nested fns) so a name is never wrongly treated as
+/// invariant: the safe direction for the `as usize` hoist in `nlower_index`.
 fn collect_assigned_set(stmts: &[Stmt], out: &mut HashSet<String>) {
     for s in stmts {
         match s {
@@ -2691,7 +3144,9 @@ fn collect_assigned_set(stmts: &[Stmt], out: &mut HashSet<String>) {
     }
 }
 
-/// lower index/bound expr to usize arithmetic
+/// Lower an expression used as an array index / range bound into `usize`
+/// arithmetic. Induction vars and length locals are already `usize`; `i64`
+/// locals get an `as usize`; integer literals stay bare (they adapt).
 fn nlower_index(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<String> {
     match e {
         Expr::IntLit(n) => Ok(format!("{}", n)),
@@ -2699,7 +3154,15 @@ fn nlower_index(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<String> {
             if ctx.usize_vars.contains(name) {
                 Ok(name.clone())
             } else if matches!(ctx.gamma.get(name), Some(Ty::Int)) {
-                // hoist invariant casts into the preheader
+                // Hoist a loop-INVARIANT `name as usize` cast to the function
+                // prologue (CSE'd) so the dimension value is live ABOVE any
+                // loop. The nested-loop MIR matchers (matvec/conv1d) insert
+                // their parallel-helper call at the OUTER loop's preheader and
+                // read the inner-dimension operand there; if that cast lived
+                // inside the loop body it would be dead at the preheader and
+                // the helper would receive garbage `n` (→ matvec wrote zeros).
+                // Only invariant names (never reassigned ⇒ a parameter) qualify,
+                // so the hoisted local is always in scope at the prologue.
                 let invariant = ctx.assigned.as_ref().map_or(false, |a| !a.contains(name));
                 if ctx.can_hoist && invariant {
                     if let Some(h) = ctx.cast_hoist.get(name) {
@@ -2724,7 +3187,7 @@ fn nlower_index(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<String> {
         }
         Expr::Call { callee, args } => {
             if let Expr::Ident(f) = callee.as_ref() {
-                if f == "len" && args.len() == 1 {
+                if f == "len" && args.len() == 1 && !ctx.gamma.contains_key(f) && !ctx.fns.contains_key(f) {
                     let (sc, st) = nlower_expr(ctx, &args[0])?;
                     if matches!(st, Ty::Seq(_) | Ty::Text) {
                         return Ok(format!("{}.len()", sc));
@@ -2737,7 +3200,8 @@ fn nlower_index(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<String> {
     }
 }
 
-/// exclusive upper bound for inclusive range end
+/// The exclusive backend upper bound for a J **inclusive** range end. The
+/// common `len(s)-1` / `n-1` forms fold to `s.len()` / `n`; otherwise add 1.
 fn inclusive_upper(ctx: &mut NCtx<'_>, end: &Expr) -> NRes<String> {
     match end {
         Expr::Binary { op: BinOp::Sub, lhs, rhs } if matches!(rhs.as_ref(), Expr::IntLit(1)) => {
@@ -2747,7 +3211,10 @@ fn inclusive_upper(ctx: &mut NCtx<'_>, end: &Expr) -> NRes<String> {
     }
 }
 
-/// seq arg borrow, whole seq or sub-slice
+/// Lower a seq-typed argument to a native call into a borrow expression:
+/// `&[T]` (or `&mut [T]`). Accepts a whole seq binding (`y`) or a sub-slice
+/// `y[a..b]` (J ranges are inclusive). `want_mut` requires the source be
+/// mutably borrowable.
 fn nlower_seq_arg(ctx: &mut NCtx<'_>, arg: &Expr, want_mut: bool) -> NRes<String> {
     let amp = if want_mut { "&mut " } else { "&" };
     match arg {
@@ -2758,7 +3225,14 @@ fn nlower_seq_arg(ctx: &mut NCtx<'_>, arg: &Expr, want_mut: bool) -> NRes<String
             if want_mut && !ctx.mut_seqs.contains(name) {
                 return Err(());
             }
-            // A shared slice *parameter*
+            // A shared slice *parameter* (`&[T]`, i.e. not a mutable seq /
+            // owned `Vec` local) is passed directly instead of re-sliced as
+            // `&name[..]`. `&name[..]` lowers to an `Index::index` *call* in
+            // MIR; an intervening call between two user calls breaks the
+            // consecutive-call shape the auto task-parallelism matcher
+            // (parallel_invoke) requires. Passing `name` is type-identical
+            // (`&[T]` is `Copy`) and call-free, so independent native calls
+            // like `a := f(x); b := f(y)` now fan out automatically.
             if !want_mut && !ctx.mut_seqs.contains(name) {
                 return Ok(name.clone());
             }
@@ -2785,7 +3259,7 @@ fn nlower_seq_arg(ctx: &mut NCtx<'_>, arg: &Expr, want_mut: bool) -> NRes<String
     }
 }
 
-/// Lower an expression to `(rust_code, type)`
+/// Lower an expression to `(rust_code, type)`. Any unsupported shape bails.
 fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
     match e {
         Expr::IntLit(n) => Ok((format!("{}i64", n), Ty::Int)),
@@ -2805,34 +3279,36 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
             Ok((s.to_string(), Ty::Float))
         }
         Expr::Ident(name) => {
-            // gamma first; unbound field names become `self.field`
+            // Params/locals (gamma) take precedence; an unbound name inside a
+            // method body that names a field resolves to `self.field`.
             if let Some(ty) = ctx.gamma.get(name).cloned() {
-                // usize length local reads back as i64
+                // A length local typed Int but stored as usize reads back as i64.
                 if ctx.usize_vars.contains(name) {
                     Ok((format!("({} as i64)", name), Ty::Int))
                 } else if ctx.owned_strings.contains(name) {
-                    // clone-on-read for owned String
+                    // Clone-on-read: an owned String local never moves on use.
                     Ok((format!("{}.clone()", name), ty))
                 } else {
                     Ok((name.clone(), ty))
                 }
             } else if let Some(csig) = ctx.self_fields {
                 let f = csig.fields.iter().find(|f| f.name == *name).ok_or(())?;
-                // Clone any non-Copy field
+                // Clone any non-Copy field: returning/using it must not move out
+                // of `&self`. Copy scalars (int/float/bool) read directly.
                 let clone = if is_copy_ty(&f.ty) { "" } else { ".clone()" };
                 Ok((format!("self.{}{}", mangle(name), clone), f.ty.clone()))
             } else {
                 Err(())
             }
         }
-        // `_` in cond-lambda is iteration element
+        // `_` inside a cond-lambda body resolves to the iteration element.
         Expr::Underscore => {
-            let ty = ctx.underscore.clone().ok_or(())?;
-            Ok(("__x".to_string(), ty))
+            ctx.underscore.clone().ok_or(())
         }
         Expr::Unary { op, operand } => {
             let (code, ty) = nlower_expr(ctx, operand)?;
             match op {
+                UnaryOp::Neg if ty == Ty::Int && ctx.checked_scalars => Ok((format!("({code}).checked_neg().unwrap_or_else(|| std::panic::panic_any(J2Err::overflow(\"result exceeds MAX_VAL\")))"), ty)),
                 UnaryOp::Neg if is_numeric(&ty) => Ok((format!("(-{})", code), ty)),
                 UnaryOp::Pos if is_numeric(&ty) => Ok((format!("({})", code), ty)),
                 UnaryOp::Not if ty == Ty::Bool => Ok((format!("(!{})", code), Ty::Bool)),
@@ -2845,17 +3321,24 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
             let (cc, ct) = nlower_expr(ctx, coll)?;
             match ct {
                 Ty::Seq(e) => {
+                    if ctx.checked_scalars && matches!(e.as_ref(), Ty::Int | Ty::Float) {
+                        let (ic, it) = nlower_expr(ctx, idx)?;
+                        if it != Ty::Int { return Err(()); }
+                        // Evaluate the signed index before introducing helper locals.
+                        // In particular, `i - 1` must not underflow as a usize.
+                        return Ok((format!("match (&({cc})[..], {ic}) {{ (__seq, __index) => {{ if __index < 0 {{ std::panic::panic_any(J2Err::index(\"negative indices are not supported\")); }} __seq.get(__index as usize).copied().unwrap_or_else(|| std::panic::panic_any(J2Err::index(format!(\"index {{}} is out of range for seq of length {{}}\", __index, __seq.len())))) }} }}"), *e));
+                    }
                     let idx_code = nlower_index(ctx, idx)?;
-                    // String element can't move out; clone
+                    // Non-`Copy` element (String) can't move out of an index.
                     let clone = if *e == Ty::Text { ".clone()" } else { "" };
                     Ok((format!("{}[{}]{}", cc, idx_code, clone), *e))
                 }
-                // `m[key]` on a map<text,V> reads a value
+                // `m[key]` on a map<text,V> reads a value (V is Copy).
                 Ty::Map(_, v) => {
                     let key = nlower_map_key(ctx, idx)?;
                     Ok((format!("{}[{}]", cc, key), *v))
                 }
-                // text index gives 1-char `String`
+                // `s[i]` on text → the i-th char as a 1-char `String`.
                 Ty::Text => {
                     let i = nlower_index(ctx, idx)?;
                     Ok((
@@ -2866,7 +3349,7 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
                 _ => Err(()),
             }
         }
-        // map field read or class field read
+        // `m.field` map read / `obj.field` class field read.
         Expr::Member { obj, field } => {
             let (oc, ot) = nlower_expr(ctx, obj)?;
             match ot {
@@ -2874,14 +3357,14 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
                 Ty::Class(cn) => {
                     let csig = ctx.classes.get(&cn).ok_or(())?;
                     let f = csig.fields.iter().find(|f| f.name == *field).ok_or(())?;
-                    // clone non-Copy field from borrowed instance
+                    // Clone any non-Copy field read out of a borrowed instance.
                     let clone = if is_copy_ty(&f.ty) { "" } else { ".clone()" };
                     Ok((format!("{}.{}{}", oc, mangle(field), clone), f.ty.clone()))
                 }
                 _ => Err(()),
             }
         }
-        // map literal to owned `HashMap<String, V>`
+        // `{a: x, b: y}` → an owned `HashMap<String, V>`.
         Expr::MapLit(entries) => {
             if entries.is_empty() {
                 return Err(());
@@ -2907,7 +3390,8 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
             Ok((s, Ty::Map(Box::new(Ty::Text), Box::new(vty))))
         }
         Expr::Call { callee, args } => nlower_call(ctx, callee, args),
-        // seq literal, ints widen if any float
+        // Owned seq literal `[a, b, c]` → `vec![a, b, c]`. Element type is
+        // the numeric join; ints coerce to f64 if any element is float.
         Expr::SeqLit(items) => {
             if items.is_empty() {
                 return Err(()); // can't infer element type from `[]`
@@ -2916,7 +3400,7 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
                 .iter()
                 .map(|it| nlower_expr(ctx, it))
                 .collect::<NRes<Vec<_>>>()?;
-            // All-text literal -> `Vec<String>` (each element owned).
+            // All-text literal → `Vec<String>` (each element owned).
             if lowered.iter().all(|(_, t)| *t == Ty::Text) {
                 let parts: Vec<String> = lowered.iter().map(|(c, _)| format!("({}).to_string()", c)).collect();
                 return Ok((format!("vec![{}]", parts.join(", ")), Ty::Seq(Box::new(Ty::Text))));
@@ -2934,58 +3418,161 @@ fn nlower_expr(ctx: &mut NCtx<'_>, e: &Expr) -> NRes<(String, Ty)> {
             }
             Ok((format!("vec![{}]", parts.join(", ")), Ty::Seq(Box::new(elem))))
         }
-        // `(a, b)` native 2-tuple for multi-value returns
+        // `(a, b)` - a native 2-tuple (used for multi-value returns).
         Expr::Pair(a, b) => {
             let (ca, ta) = nlower_expr(ctx, a)?;
             let (cb, tb) = nlower_expr(ctx, b)?;
             Ok((format!("({}, {})", ca, cb), Ty::Pair(Box::new(ta), Box::new(tb))))
         }
-        // map unary fn over seq; result chains
-        Expr::Pipe { lhs, rhs } => {
-            let (lc, lt) = nlower_expr(ctx, lhs)?;
-            let elem = match lt { Ty::Seq(e) => *e, _ => return Err(()) };
-            let fname = match rhs.as_ref() { Expr::Ident(n) => n.as_str(), _ => return Err(()) };
-            let (body, ret_elem) = map_apply(ctx, fname, "__x", &elem)?;
-            Ok((
-                format!("{lc}.iter().map(|&__x| {body}).collect::<Vec<_>>()"),
-                Ty::Seq(Box::new(ret_elem)),
-            ))
-        }
-        // filter by bool fn or inline cond-lambda
-        Expr::Filter { lhs, rhs } => {
-            let (lc, lt) = nlower_expr(ctx, lhs)?;
-            let elem = match lt { Ty::Seq(e) => *e, _ => return Err(()) };
-            let pred = match rhs.as_ref() {
-                // inline cond-lambda; lower body with `_` element
-                Expr::CondLambda(inner) => {
-                    let saved = ctx.underscore.take();
-                    ctx.underscore = Some(elem.clone());
-                    let res = nlower_expr(ctx, inner);
-                    ctx.underscore = saved;
-                    let (code, t) = res?;
-                    if t != Ty::Bool { return Err(()); }
-                    code
-                }
-                // Named predicate (a native bool fn).
-                Expr::Ident(fname) => {
-                    let (code, prt) = map_apply(ctx, fname, "__x", &elem)?;
-                    if prt != Ty::Bool { return Err(()); }
-                    code
-                }
-                _ => return Err(()),
-            };
-            Ok((
-                format!("{lc}.iter().filter(|&&__x| {pred}).cloned().collect::<Vec<_>>()"),
-                Ty::Seq(Box::new(elem)),
-            ))
-        }
+        // Collection transforms preserve order and use scoped workers only for
+        // native scalar callbacks (which cannot access the dynamic environment).
+        Expr::Pipe { lhs, rhs } => nlower_transform(ctx, lhs, rhs, false),
+        Expr::Filter { lhs, rhs } => nlower_transform(ctx, lhs, rhs, true),
         _ => Err(()),
     }
 }
 
-/// apply unary `fname` to pre-lowered arg
+/// Scalar-only callbacks have no reference to a mutable collection, class,
+/// dynamic environment, or unknown function value. Native functions themselves
+/// can only call other native code and the explicitly supported builtins; a
+/// scalar-only interface therefore has no externally visible mutation or I/O.
+/// Reject everything else rather than inferring purity from Send + Sync.
+fn scalar_callback_expr(ctx: &NCtx<'_>, e: &Expr) -> bool {
+    let scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float | Ty::Bool);
+    match e {
+        Expr::IntLit(_) | Expr::FloatLit(_) | Expr::Bool(_) | Expr::Const(_) => true,
+        Expr::Underscore => ctx.underscore.is_some(),
+        Expr::Ident(n) => ctx.gamma.get(n).map_or(false, scalar),
+        Expr::Unary { operand, .. } => scalar_callback_expr(ctx, operand),
+        Expr::Binary { lhs, rhs, .. } => {
+            scalar_callback_expr(ctx, lhs) && scalar_callback_expr(ctx, rhs)
+        }
+        Expr::Index { coll, idx } => {
+            matches!(coll.as_ref(), Expr::Ident(n) if matches!(ctx.gamma.get(n), Some(Ty::Seq(e)) if matches!(e.as_ref(), Ty::Int | Ty::Float)))
+                && scalar_callback_expr(ctx, idx)
+        }
+        Expr::Call { callee, args } => {
+            let Expr::Ident(n) = callee.as_ref() else { return false; };
+            if ctx.gamma.contains_key(n) { return false; }
+            if n == "len" && !ctx.fns.contains_key(n) && args.len() == 1 {
+                return matches!(&args[0], Expr::Ident(n) if matches!(ctx.gamma.get(n), Some(Ty::Seq(e)) if matches!(e.as_ref(), Ty::Int | Ty::Float)));
+            }
+            let callable = if let Some(sig) = ctx.fns.get(n) {
+                sig.params.iter().all(|t| scalar(t) || matches!(t, Ty::Var(_)))
+                    && (scalar(&sig.ret) || matches!(sig.ret, Ty::Var(_)))
+                    && sig.borrows.iter().all(|b| *b == Borrow::ByVal)
+            } else {
+                matches!(n.as_str(), "sqrt" | "abs" | "floor" | "ceil" | "round"
+                    | "exp" | "ln" | "sin" | "cos" | "tan" | "pow" | "min" | "max" | "clamp")
+            };
+            callable && args.iter().all(|a| scalar_callback_expr(ctx, a))
+        }
+        _ => false,
+    }
+}
+
+/// A raw J2 range is a consumable flow, so only materialize it natively at
+/// an immediate collection consumer. General bindings/returns must stay dynamic.
+fn nlower_collection_input(ctx: &mut NCtx<'_>, input: &Expr) -> NRes<(String, Ty)> {
+    if let Expr::Range { start, end: Some(end) } = input {
+        let (lo, lt) = nlower_expr(ctx, start)?;
+        let (hi, ht) = nlower_expr(ctx, end)?;
+        if lt != Ty::Int || ht != Ty::Int { return Err(()); }
+        return Ok((format!("match ({lo}, {hi}) {{ (__lo, __hi) if __lo <= __hi => (__lo..=__hi).collect::<Vec<i64>>(), (__lo, __hi) => (__hi..=__lo).rev().collect::<Vec<i64>>() }}"), Ty::Seq(Box::new(Ty::Int))));
+    }
+    nlower_expr(ctx, input)
+}
+
+fn nlower_transform(ctx: &mut NCtx<'_>, input: &Expr, callback: &Expr, filter: bool) -> NRes<(String, Ty)> {
+    let (source, source_ty) = nlower_collection_input(ctx, input)?;
+    let Ty::Seq(elem) = source_ty else { return Err(()); };
+    if let Expr::SeqLit(items) = input {
+        if items.iter().any(|item| peek_ty(ctx, item) != *elem) { return Err(()); }
+    }
+    if !matches!(elem.as_ref(), Ty::Int | Ty::Float) { return Err(()); }
+    // Choose a closure argument which cannot shadow a captured source binding.
+    let mut reserved = ctx.gamma.keys().cloned().collect::<HashSet<_>>();
+    gather_all_idents(callback, &mut reserved);
+    if let Expr::Lambda { body, .. } = callback {
+        parallel_callbacks::binding_names(body, &mut reserved);
+    }
+    let mut item = format!("__j2_item_{}", ctx.tmp_ctr);
+    ctx.tmp_ctr += 1;
+    while reserved.contains(&item) {
+        item.push('_');
+    }
+    let (arg, body, ret) = match callback {
+        Expr::Ident(name) if !ctx.gamma.contains_key(name) => {
+            let (body, ret) = map_apply(ctx, name, &item, &elem)?;
+            (item, body, ret)
+        }
+        Expr::Lambda { params, body } if params.len() == 1 && params[0].pattern.is_none() => {
+            if params[0].ty.as_ref().map_or(false, |t| *t != *elem) { return Err(()); }
+            let mut child = ctx.clone();
+            child.can_hoist = false;
+            child.checked_scalars = true;
+            child.self_fields = None;
+            child.usize_vars.remove(&params[0].name);
+            child.gamma.insert(params[0].name.clone(), (*elem).clone());
+            let arg = if params[0].name == "_" { item } else { params[0].name.clone() };
+            child.underscore = if params[0].name == "_" { Some((arg.clone(), (*elem).clone())) } else { None };
+            let (body, ret) = parallel_callbacks::lower(&mut child, &params[0].name, &arg, body)?;
+            (arg, body, ret)
+        }
+        Expr::CondLambda(expr) => {
+            // Legacy condition closures resolve globals, not lexical collection
+            // captures. Keep their existing scalar-only scope.
+            let mut refs = HashSet::new();
+            gather_all_idents(expr, &mut refs);
+            if refs.iter().any(|n| matches!(ctx.gamma.get(n), Some(Ty::Seq(_)))) { return Err(()); }
+            let mut child = ctx.clone();
+            child.can_hoist = false;
+            child.checked_scalars = true;
+            child.self_fields = None;
+            child.underscore = Some((item.clone(), (*elem).clone()));
+            if !scalar_callback_expr(&child, expr) { return Err(()); }
+            let (body, ret) = nlower_expr(&mut child, expr)?;
+            (item, body, ret)
+        }
+        _ => return Err(()),
+    };
+    if filter && ret != Ty::Bool { return Err(()); }
+    if !filter && !matches!(ret, Ty::Int | Ty::Float) { return Err(()); }
+    let input_ty = scalar_rust(&elem)?;
+    let ret_ty = scalar_rust(&ret)?;
+    let helper = if filter { "filter_native" } else { "map_native" };
+    let serial = if filter {
+        "__j2_source.iter().filter(|v| __j2_callback(*v)).copied().collect::<Vec<_>>()"
+    } else {
+        "__j2_source.iter().map(__j2_callback).collect::<Vec<_>>()"
+    };
+    // Borrow captured arrays after evaluating the input, so move closures copy
+    // the shared views and leave owned sequence locals available afterward.
+    let mut capture_refs = HashSet::new();
+    gather_all_idents(callback, &mut capture_refs);
+    let mut captures: Vec<_> = capture_refs.into_iter()
+        .filter(|n| matches!(ctx.gamma.get(n), Some(Ty::Seq(_))))
+        .collect();
+    captures.sort();
+    let capture_views = captures.iter().map(|n| format!("let {n} = &{n}[..]; ")).collect::<String>();
+    let mut source_name = format!("__j2_source_{}", ctx.tmp_ctr);
+    let mut callback_name = format!("__j2_callback_{}", ctx.tmp_ctr);
+    ctx.tmp_ctr += 1;
+    while reserved.contains(&source_name) { source_name.push('_'); }
+    while reserved.contains(&callback_name) { callback_name.push('_'); }
+    let serial = serial.replace("__j2_source", &source_name).replace("__j2_callback", &callback_name);
+    // Emit a literal, not a module constant that could conflict with a source
+    // binding. These stable-Rust helpers also work with the stock backend.
+    let auto_collections = std::env::var("J2_PARALLEL").as_deref() != Ok("0");
+    let code = format!("{{ let {source_name} = &({source})[..]; {capture_views}let {callback_name} = move |&{arg}: &{input_ty}| -> {ret_ty} {{ {body} }}; if {auto_collections} {{ j2_runtime::parallel::{helper}({source_name}, {callback_name}) }} else {{ {serial} }} }}");
+    Ok((code, Ty::Seq(if filter { elem } else { Box::new(ret) })))
+}
+
+/// Lower the application of unary `fname` to a single pre-lowered argument
+/// `argcode` of type `argty` (used by map-pipe lowering). Returns the
+/// element expression and its result type.
 fn map_apply(ctx: &NCtx<'_>, fname: &str, argcode: &str, argty: &Ty) -> NRes<(String, Ty)> {
-    // user/inferred native fn with one scalar param
+    // User / inferred native fn taking exactly one scalar.
     if let Some(sig) = ctx.fns.get(fname).cloned() {
         if sig.params.len() != 1 || matches!(sig.params[0], Ty::Seq(_) | Ty::Text) {
             return Err(());
@@ -3002,15 +3589,30 @@ fn map_apply(ctx: &NCtx<'_>, fname: &str, argcode: &str, argty: &Ty) -> NRes<(St
         let arg = coerce(argcode.to_string(), argty, &msig.params[0])?;
         return Ok((format!("{callee}({arg})"), msig.ret));
     }
-    // Math builtins: float -> float.
+    // Math builtins: float → float.
     match fname {
-        "sqrt" | "abs" | "floor" | "ceil" | "round" | "exp" | "ln" | "sin" | "cos" | "tan" => {
+        "abs" if *argty == Ty::Int => {
+            Ok((format!("({argcode}).wrapping_abs()"), Ty::Int))
+        }
+        "floor" | "ceil" | "round" => {
             let a = coerce(argcode.to_string(), argty, &Ty::Float)?;
-            let method = if fname == "ln" { "ln" } else { fname };
-            Ok((format!("({}).{}()", a, method), Ty::Float))
+            Ok((native_round(fname, &a), Ty::Int))
+        }
+        "sqrt" | "abs" | "exp" | "ln" | "sin" | "cos" | "tan" => {
+            let a = coerce(argcode.to_string(), argty, &Ty::Float)?;
+            if fname == "sqrt" {
+                return Ok((format!("match {a} {{ __v => {{ if __v < 0.0 {{ std::panic::panic_any(J2Err::value(\"cannot take square root of negative number\")); }} __v.sqrt() }} }}"), Ty::Float));
+            }
+            Ok((format!("({a}).{fname}()"), Ty::Float))
         }
         _ => Err(()),
     }
+}
+
+/// Share the checked conversion and rounding rule with the dynamic builtins.
+fn native_round(name: &str, value: &str) -> String {
+    let method = if name == "round" { "round_ties_even" } else { name };
+    format!("j2_runtime::builtins::f64_to_i64(({value}).{method}(), {name:?}).unwrap_or_else(|e| std::panic::panic_any(e))")
 }
 
 fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes<(String, Ty)> {
@@ -3018,7 +3620,7 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
     let (lc, lt) = nlower_expr(ctx, lhs)?;
     let (rc, rt) = nlower_expr(ctx, rhs)?;
     match op {
-        // text `+` text gives owned String
+        // Text concatenation: `a + b` where both are text → owned String.
         Add if lt == Ty::Text && rt == Ty::Text => {
             Ok((format!("format!(\"{{}}{{}}\", {}, {})", lc, rc), Ty::Text))
         }
@@ -3029,7 +3631,23 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
             let rty = if lt == Ty::Float || rt == Ty::Float { Ty::Float } else { Ty::Int };
             let l = coerce(lc, &lt, &rty)?;
             let r = coerce(rc, &rt, &rty)?;
-            // CSE self-multiply to one temp for matcher
+            if ctx.checked_scalars && rty == Ty::Int && matches!(op, Add | Sub | Mul) {
+                let method = match op { Add => "checked_add", Sub => "checked_sub", _ => "checked_mul" };
+                return Ok((format!("({l}).{method}({r}).unwrap_or_else(|| std::panic::panic_any(J2Err::overflow(\"result exceeds MAX_VAL\")))"), Ty::Int));
+            }
+            if ctx.checked_scalars && *op == Rem {
+                let zero = if rty == Ty::Int { "0" } else { "0.0" };
+                let expr = if rty == Ty::Int { "__l.checked_rem_euclid(__r).unwrap_or(0)" } else { "__l % __r" };
+                return Ok((format!("match ({l}, {r}) {{ (__l, __r) => {{ if __r == {zero} {{ std::panic::panic_any(J2Err::zero_div(\"modulo by zero\")); }} {expr} }} }}"), rty));
+            }
+            if *op == Rem && rty == Ty::Int {
+                return Ok((format!("({l}).rem_euclid({r})"), Ty::Int));
+            }
+            // CSE a self-multiply of a compound subexpression into one temp, so
+            // `(a[i]-b[i])*(a[i]-b[i])` lowers to a single diff local squared -
+            // the shape the ZIP-DIFF-SQ-ADD reduction matcher requires. This is
+            // bit-identical (the two operands compute the same value), so it
+            // can never change a result, only enable parallelization.
             if *op == Mul && l == r && (l.contains('[') || l.contains('(')) {
                 if let Some(rt_s) = rust_ty(&rty)? {
                     let n = ctx.tmp_ctr;
@@ -3044,19 +3662,26 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
             Ok((format!("({} {} {})", l, o, r), rty))
         }
         Div => {
+            // Integer division has a value-dependent result type in J2. Keep
+            // that callback dynamic rather than lose precision through f64.
+            if ctx.checked_scalars && lt == Ty::Int && rt == Ty::Int { return Err(()); }
             if !is_numeric(&lt) || !is_numeric(&rt) { return Err(()); }
             let l = coerce(lc, &lt, &Ty::Float)?;
             let r = coerce(rc, &rt, &Ty::Float)?;
+            if ctx.checked_scalars {
+                return Ok((format!("match ({l}, {r}) {{ (__l, __r) => {{ if __r == 0.0 {{ std::panic::panic_any(J2Err::zero_div(\"division by zero\")); }} __l / __r }} }}"), Ty::Float));
+            }
             Ok((format!("({} / {})", l, r), Ty::Float))
         }
         Pow => {
+            if ctx.checked_scalars { return Err(()); } // int power is checked and value-dependent
             if !is_numeric(&lt) || !is_numeric(&rt) { return Err(()); }
             let l = coerce(lc, &lt, &Ty::Float)?;
             let r = coerce(rc, &rt, &Ty::Float)?;
             Ok((format!("({}).powf({})", l, r), Ty::Float))
         }
         Eq | NotEq | Lt | Gt | LtEq | GtEq => {
-            // numeric cmp (int to float), text/bool eq
+            // Numeric comparison with int→float coercion, or text/bool eq.
             let o = match op { Eq => "==", NotEq => "!=", Lt => "<", Gt => ">", LtEq => "<=", GtEq => ">=", _ => unreachable!() };
             if is_numeric(&lt) && is_numeric(&rt) {
                 let common = if lt == Ty::Float || rt == Ty::Float { Ty::Float } else { Ty::Int };
@@ -3064,7 +3689,8 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
                 let r = coerce(rc, &rt, &common)?;
                 Ok((format!("({} {} {})", l, o, r), Ty::Bool))
             } else if lt == Ty::Text && rt == Ty::Text {
-                // text cmp; `[..]` unifies String and &str
+                // Lexicographic text comparison (all ops). `&(x)[..]` coerces
+                // String|&str to &str so both operands compare uniformly.
                 Ok((format!("(&({})[..] {} &({})[..])", lc, o, rc), Ty::Bool))
             } else if lt == rt && matches!(op, Eq | NotEq) {
                 Ok((format!("({} {} {})", lc, o, rc), Ty::Bool))
@@ -3078,6 +3704,7 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
             Ok((format!("({} {} {})", lc, o, rc), Ty::Bool))
         }
         BAnd | BOr | BXor | Shl | Shr => {
+            if ctx.checked_scalars && matches!(op, Shl | Shr) { return Err(()); }
             if lt != Ty::Int || rt != Ty::Int { return Err(()); }
             let o = match op { BAnd => "&", BOr => "|", BXor => "^", Shl => "<<", Shr => ">>", _ => unreachable!() };
             Ok((format!("({} {} {})", lc, o, rc), Ty::Int))
@@ -3085,18 +3712,24 @@ fn nlower_binary(ctx: &mut NCtx<'_>, op: &BinOp, lhs: &Expr, rhs: &Expr) -> NRes
     }
 }
 
-/// Lower fn-valued arg to satisfy `impl Fn`
+/// Lower a function-valued argument at a native call site to a value that
+/// satisfies an `impl Fn(..)->..` bound. Two forms are supported:
+///   - a named native fn (`g` → `g__native`) with a matching scalar signature;
+///   - a capture-free `move` closure for a single-expression lambda.
+/// A function-typed parameter already in scope is passed through unchanged.
+/// Anything else bails so the calling fn falls back to dynamic.
 fn nlower_fn_arg(ctx: &mut NCtx<'_>, arg: &Expr, ps: &[Ty], r: &Ty) -> NRes<String> {
     match arg {
         Expr::Ident(g) => {
-            // A function-typed parameter in scope
+            // A function-typed parameter in scope (e.g. forwarding `f` from one
+            // HOF to another) - pass the closure value straight through.
             if let Some(Ty::Func(gps, gr)) = ctx.gamma.get(g) {
                 if gps.as_slice() == ps && gr.as_ref() == r {
                     return Ok(g.clone());
                 }
                 return Err(());
             }
-            // known non-generic, non-HOF native fn
+            // A known non-generic, non-HOF native fn with a matching signature.
             let gsig = ctx.fns.get(g).ok_or(())?;
             if first_var_name(gsig).is_some() || is_hof_sig(gsig) {
                 return Err(());
@@ -3104,7 +3737,7 @@ fn nlower_fn_arg(ctx: &mut NCtx<'_>, arg: &Expr, ps: &[Ty], r: &Ty) -> NRes<Stri
             if gsig.params.as_slice() != ps || &gsig.ret != r {
                 return Err(());
             }
-            // scalar by-value params keep fn-item type
+            // Scalar-only by-value params keep the fn-item's type `fn(..)->..`.
             if gsig.borrows.iter().any(|b| *b != Borrow::ByVal) {
                 return Err(());
             }
@@ -3118,7 +3751,10 @@ fn nlower_fn_arg(ctx: &mut NCtx<'_>, arg: &Expr, ps: &[Ty], r: &Ty) -> NRes<Stri
             if params.len() != ps.len() {
                 return Err(());
             }
-            // Captures must be `Copy` scalars
+            // Captures must be `Copy` scalars (matching J's clone-snapshot
+            // capture). Any non-Copy enclosing local referenced ANYWHERE in
+            // the body → bail. Uses the exhaustive `gather_all_idents` so a
+            // capture buried inside e.g. a MapLit value is never missed.
             let mut refs = HashSet::new();
             gather_all_idents(be, &mut refs);
             let lp_names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
@@ -3153,10 +3789,12 @@ fn nlower_fn_arg(ctx: &mut NCtx<'_>, arg: &Expr, ps: &[Ty], r: &Ty) -> NRes<Stri
                 self_fields: ctx.self_fields,
                 self_mut: false,
                 ret: r.clone(),
-                // single-expr closure has no prologue; hoisting off
+                // Single-expression closure body: no loop, and no prologue
+                // flush site, so hoisting must stay disabled here.
                 prologue: Vec::new(),
                 tmp_ctr: 0,
                 can_hoist: false,
+                checked_scalars: ctx.checked_scalars,
                 assigned: None,
                 cast_hoist: HashMap::new(),
             };
@@ -3172,7 +3810,8 @@ fn nlower_fn_arg(ctx: &mut NCtx<'_>, arg: &Expr, ps: &[Ty], r: &Ty) -> NRes<Stri
     }
 }
 
-/// Whether `e` is a loop-invariant constant scalar
+/// Whether `e` is a loop-invariant constant scalar (safe to hoist out of a
+/// loop into a prologue binding).
 fn is_const_scalar_expr(e: &Expr) -> bool {
     match e {
         Expr::IntLit(_) | Expr::FloatLit(_) | Expr::Bool(_) | Expr::Const(_) => true,
@@ -3183,7 +3822,11 @@ fn is_const_scalar_expr(e: &Expr) -> bool {
     }
 }
 
-/// Hoist const scalar operand into prologue local
+/// Hoist a constant scalar operand into a named prologue local and return that
+/// name, so a MIR idiom matcher that requires `Operand::Copy` (not an inline
+/// `Operand::Constant`) will accept it. When hoisting is disabled or the
+/// operand isn't a hoistable constant, the inline `code` is returned unchanged
+/// (preserving the previous behavior, so nothing regresses).
 fn hoist_const_operand(ctx: &mut NCtx<'_>, arg: &Expr, code: String, rust_ty: &str) -> String {
     if ctx.can_hoist && is_const_scalar_expr(arg) {
         let name = format!("__pconst_{}", ctx.tmp_ctr);
@@ -3195,7 +3838,8 @@ fn hoist_const_operand(ctx: &mut NCtx<'_>, arg: &Expr, code: String, rust_ty: &s
     }
 }
 
-/// Prepend the accumulated prologue bindings
+/// Prepend the accumulated prologue bindings (indented by `ind`) to a function
+/// body so loop-invariant hoists land above any loop in that body.
 fn flush_prologue(ctx: &NCtx<'_>, ind: &str, body: String) -> String {
     if ctx.prologue.is_empty() {
         return body;
@@ -3207,12 +3851,16 @@ fn flush_prologue(ctx: &NCtx<'_>, ind: &str, body: String) -> String {
     format!("{pro}{body}")
 }
 
-/// Construct a native class
+/// Construct a native class: `Point(x: a, y: b)` (named MapLit arg) or
+/// `Point(a, b)` (positional) → a backend struct literal. Missing fields use
+/// their declared defaults; otherwise bail.
 fn nlower_construct(ctx: &mut NCtx<'_>, csig: &ClassSig, args: &[Expr]) -> NRes<(String, Ty)> {
     let cn = csig.name.clone();
     let field_val = |ctx: &mut NCtx<'_>, f: &ClassFieldSig, ve: &Expr| -> NRes<String> {
         let (vc, vt) = nlower_expr(ctx, ve)?;
-        // storing instance copies value; bail to dynamic
+        // Storing an instance value into another instance would copy it
+        // (value semantics), diverging from the dynamic shared-reference
+        // semantics if the source is later mutated. Bail to dynamic.
         if matches!(vt, Ty::Class(_)) {
             return Err(());
         }
@@ -3235,7 +3883,10 @@ fn nlower_construct(ctx: &mut NCtx<'_>, csig: &ClassSig, args: &[Expr]) -> NRes<
             return Ok((format!("{} {{ {} }}", cn, parts.join(", ")), Ty::Class(cn.clone())));
         }
     }
-    // positional args; Map-first bails to match `__call`
+    // Positional form: args in field declaration order. Dynamic construction
+    // (`__call`) treats a Map-valued FIRST argument as a named-override map,
+    // not as a positional value - so bail here to match it (the program runs
+    // dynamically and both paths agree).
     if args.len() == csig.fields.len() {
         if let Some(a0) = args.first() {
             if matches!(peek_ty(ctx, a0), Ty::Map(..)) {
@@ -3253,14 +3904,15 @@ fn nlower_construct(ctx: &mut NCtx<'_>, csig: &ClassSig, args: &[Expr]) -> NRes<
 }
 
 fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String, Ty)> {
-    // Method call `obj.method(args)` on a class instance
+    // Method call `obj.method(args)` on a class instance (value position →
+    // pure `&self` methods only; mutating methods are handled as statements).
     if let Expr::Member { obj, field } = callee {
         let (oc, ot) = nlower_expr(ctx, obj)?;
         let Ty::Class(cn) = ot else { return Err(()) };
         let csig = ctx.classes.get(&cn).ok_or(())?;
         let m = csig.methods.get(field).ok_or(())?;
         if m.borrow_self == Borrow::Mut {
-            return Err(()); // mutating call in value position -> dynamic
+            return Err(()); // mutating call in value position → dynamic
         }
         if args.len() != m.params.len() {
             return Err(());
@@ -3276,7 +3928,8 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
         Expr::Ident(n) => n.as_str(),
         _ => return Err(()),
     };
-    // call Fn param inside HOF; coerce args
+    // Call a function-typed parameter inside a HOF body: `f(args)` where `f`
+    // is a generic `Fn` parameter. Coerce args to the declared param types.
     if let Some(Ty::Func(ps, r)) = ctx.gamma.get(fname).cloned() {
         if args.len() != ps.len() {
             return Err(());
@@ -3288,24 +3941,29 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
         }
         return Ok((format!("{}({})", fname, acode.join(", ")), (*r).clone()));
     }
-    // native class construction to struct literal
+    // A local non-callable binding also shadows a builtin/native function.
+    if ctx.gamma.contains_key(fname) { return Err(()); }
+    // Native class construction: `Point(x: a, y: b)` → struct literal.
     if let Some(csig) = ctx.classes.get(fname).cloned() {
         return nlower_construct(ctx, &csig, args);
     }
-    // Native -> native direct call
+    // Native → native direct call. Seq arguments are passed by borrow
+    // (`&[T]` / `&mut [T]`), including sub-slices `x[a..b]`. Text args bail.
     if let Some(sig) = ctx.fns.get(fname).cloned() {
         if args.len() != sig.params.len() {
             return Err(());
         }
-        // resolve generic monomorph from actual arg types
+        // Resolve a generic callee's monomorph at the call site from the
+        // actual argument types (enables recursion and generic composition
+        // to stay native). Non-generic callees use the plain `__native` fn.
         let (sig, native_name) = match first_var_name(&sig) {
             None => (sig, format!("{}__native", fname)),
             Some(var) => {
-                // generic callee needs both monomorphs
+                // Only call a generic callee whose both monomorphs exist.
                 if !ctx.safe_gen.contains(fname) {
                     return Err(());
                 }
-                // T-bearing args must agree on width
+                // Every T-bearing argument must agree on the concrete width.
                 let mut concrete: Option<Ty> = None;
                 for (a, pt) in args.iter().zip(sig.params.iter()) {
                     let bound = match pt {
@@ -3318,7 +3976,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
                     if let Some(t) = bound {
                         if t != Ty::Float && t != Ty::Int { return Err(()); }
                         match &concrete {
-                            Some(c) if *c != t => return Err(()), // inconsistent -> bail
+                            Some(c) if *c != t => return Err(()), // inconsistent → bail
                             _ => concrete = Some(t),
                         }
                     }
@@ -3328,19 +3986,46 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
                 (subst_sig(&sig, &var, &concrete), format!("{}__native_{}", fname, suffix))
             }
         };
+        // Taking multiple borrows of the same collection, including slices,
+        // can violate Rust's borrow rules and J's shared-reference semantics.
+        // Keep these calls dynamic unless every borrow is shared.
+        let seq_root = |arg: &Expr| match arg {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Index { coll, .. } => match coll.as_ref() {
+                Expr::Ident(name) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        for i in 0..args.len() {
+            for j in i + 1..args.len() {
+                if matches!(sig.params[i], Ty::Seq(_)) && matches!(sig.params[j], Ty::Seq(_))
+                    && (sig.borrows[i] == Borrow::Mut || sig.borrows[j] == Borrow::Mut)
+                {
+                    if let (Some(a), Some(b)) = (seq_root(&args[i]), seq_root(&args[j])) {
+                        if a == b { return Err(()); }
+                    }
+                }
+            }
+        }
         let mut call_args = String::new();
         for (i, ((a, pt), b)) in args.iter().zip(sig.params.iter()).zip(sig.borrows.iter()).enumerate() {
             if i > 0 { call_args.push_str(", "); }
             match pt {
                 Ty::Seq(_) => {
+                    // A slice cannot coerce its element type. Keep numeric
+                    // representation mismatches at the dynamic boundary,
+                    // where dispatch can preserve the original J2 values.
+                    if peek_ty(ctx, a) != *pt { return Err(()); }
                     let want_mut = *b == Borrow::Mut;
                     call_args.push_str(&nlower_seq_arg(ctx, a, want_mut)?);
                 }
-                // Function argument to a HOF
+                // Function argument to a HOF: a named native fn or a
+                // capture-free `move` closure (monomorphized, inlined).
                 Ty::Func(ps, r) => {
                     call_args.push_str(&nlower_fn_arg(ctx, a, ps, r)?);
                 }
-                // text/map reference passing across calls deferred
+                // Text / map reference-passing across native calls is deferred.
                 Ty::Text | Ty::Map(..) => return Err(()),
                 _ => {
                     let (ac, at) = nlower_expr(ctx, a)?;
@@ -3352,7 +4037,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
     }
     // Seq-producing builtins.
     match fname {
-        // `make_seq(n, init)` -> `vec![init; n]`.
+        // `make_seq(n, init)` → `vec![init; n]`.
         "make_seq" => {
             if args.len() != 2 { return Err(()); }
             let n_usize = nlower_index(ctx, &args[0])?;
@@ -3360,7 +4045,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             if !is_numeric(&it) { return Err(()); }
             return Ok((format!("vec![{}; {}]", ic, n_usize), Ty::Seq(Box::new(it))));
         }
-        // `copy(s)` -> an owned `Vec<T>`
+        // `copy(s)` → an owned `Vec<T>` (the move-semantics workaround).
         "copy" => {
             if args.len() != 1 { return Err(()); }
             let (sc, st) = nlower_expr(ctx, &args[0])?;
@@ -3369,7 +4054,8 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             }
             return Err(());
         }
-        // Native text predicates / search
+        // Native text predicates / search (Copy results, borrowed args - no
+        // move hazard). `&(x)[..]` coerces String|&str → &str uniformly.
         "contains" | "starts_with" | "ends_with" if args.len() == 2 => {
             let (sc, st) = nlower_expr(ctx, &args[0])?;
             let (subc, subt) = nlower_expr(ctx, &args[1])?;
@@ -3386,7 +4072,8 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
                 Ty::Int,
             ));
         }
-        // String-producing text builtins -> owned `String`
+        // String-producing text builtins → owned `String` (clone-on-read
+        // makes the result safe to reuse). Args are borrowed.
         "upper" | "lower" | "trim" if args.len() == 1 => {
             let (sc, st) = nlower_expr(ctx, &args[0])?;
             if st != Ty::Text { return Err(()); }
@@ -3397,7 +4084,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             };
             return Ok((expr, Ty::Text));
         }
-        // `replace(s, find, with)` -> owned String.
+        // `replace(s, find, with)` → owned String.
         "replace" if args.len() == 3 => {
             let (sc, st) = nlower_expr(ctx, &args[0])?;
             let (fc, ft) = nlower_expr(ctx, &args[1])?;
@@ -3405,7 +4092,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             if st != Ty::Text || ft != Ty::Text || wt != Ty::Text { return Err(()); }
             return Ok((format!("(&({})[..]).replace(&({})[..], &({})[..])", sc, fc, wc), Ty::Text));
         }
-        // `split(s, sep)` -> seq<text>
+        // `split(s, sep)` → seq<text> (empty sep splits into chars, per J).
         "split" if args.len() == 2 => {
             let (sc, st) = nlower_expr(ctx, &args[0])?;
             let (sepc, sept) = nlower_expr(ctx, &args[1])?;
@@ -3418,7 +4105,7 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
                 Ty::Seq(Box::new(Ty::Text)),
             ));
         }
-        // `join(words, sep)` -> owned String.
+        // `join(words, sep)` → owned String.
         "join" if args.len() == 2 => {
             let (sc, st) = nlower_expr(ctx, &args[0])?;
             let (sepc, sept) = nlower_expr(ctx, &args[1])?;
@@ -3427,7 +4114,17 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
         }
         _ => {}
     }
-    // Native math builtins: float -> float.
+    if fname == "collect" && args.len() == 1 {
+        let (code, ty) = nlower_collection_input(ctx, &args[0])?;
+        if matches!(ty, Ty::Seq(_)) {
+            return Ok((format!("({code}).to_vec()"), ty));
+        }
+        return Err(());
+    }
+    if matches!(fname, "map" | "filter") && args.len() == 2 {
+        return nlower_transform(ctx, &args[0], &args[1], fname == "filter");
+    }
+    // Native math builtins: float → float.
     match fname {
         "len" => {
             if args.len() != 1 { return Err(()); }
@@ -3438,14 +4135,28 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
                 Err(())
             }
         }
-        "sqrt" | "abs" | "floor" | "ceil" | "round" | "exp" | "ln" | "sin" | "cos" | "tan" => {
+        "abs" if args.len() == 1 && peek_ty(ctx, &args[0]) == Ty::Int => {
+            let (ac, at) = nlower_expr(ctx, &args[0])?;
+            if at != Ty::Int { return Err(()); }
+            Ok((format!("({ac}).wrapping_abs()"), Ty::Int))
+        }
+        "floor" | "ceil" | "round" => {
             if args.len() != 1 { return Err(()); }
             let (ac, at) = nlower_expr(ctx, &args[0])?;
             let ac = coerce(ac, &at, &Ty::Float)?;
-            let method = if fname == "ln" { "ln" } else { fname };
-            Ok((format!("({}).{}()", ac, method), Ty::Float))
+            Ok((native_round(fname, &ac), Ty::Int))
+        }
+        "sqrt" | "abs" | "exp" | "ln" | "sin" | "cos" | "tan" => {
+            if args.len() != 1 { return Err(()); }
+            let (ac, at) = nlower_expr(ctx, &args[0])?;
+            let ac = coerce(ac, &at, &Ty::Float)?;
+            if ctx.checked_scalars && fname == "sqrt" {
+                return Ok((format!("match {ac} {{ __v => {{ if __v < 0.0 {{ std::panic::panic_any(J2Err::value(\"cannot take square root of negative number\")); }} __v.sqrt() }} }}"), Ty::Float));
+            }
+            Ok((format!("({ac}).{fname}()"), Ty::Float))
         }
         "pow" => {
+            if ctx.checked_scalars { return Err(()); }
             if args.len() != 2 { return Err(()); }
             let (ac, at) = nlower_expr(ctx, &args[0])?;
             let (bc, bt) = nlower_expr(ctx, &args[1])?;
@@ -3453,7 +4164,8 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             let bc = coerce(bc, &bt, &Ty::Float)?;
             Ok((format!("({}).powf({})", ac, bc), Ty::Float))
         }
-        // Binary min/max -> `a.max(b)` / `a.min(b)`
+        // Binary min/max → `a.max(b)` / `a.min(b)`. Element-wise forms like
+        // `dst[i] = max(a[i], b[i])` then fire the binary-apply matcher.
         "max" | "min" if args.len() == 2 => {
             let (ac, at) = nlower_expr(ctx, &args[0])?;
             let (bc, bt) = nlower_expr(ctx, &args[1])?;
@@ -3463,7 +4175,10 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             let bc = coerce(bc, &bt, &common)?;
             Ok((format!("({}).{}({})", ac, fname, bc), common))
         }
-        // `clamp(x, lo, hi)` -> `x.clamp(lo, hi)`
+        // `clamp(x, lo, hi)` → `x.clamp(lo, hi)`. Literal bounds are hoisted
+        // to prologue locals so the element-wise CLAMP matcher (which rejects
+        // inline `Operand::Constant` bounds) fires - `dst[i] = clamp(a[i], 0,1)`
+        // then auto-parallelizes.
         "clamp" if args.len() == 3 => {
             let (xc, xt) = nlower_expr(ctx, &args[0])?;
             let (lc, lt) = nlower_expr(ctx, &args[1])?;
@@ -3476,20 +4191,28 @@ fn nlower_call(ctx: &mut NCtx<'_>, callee: &Expr, args: &[Expr]) -> NRes<(String
             let rt = rust_ty(&common)?.ok_or(())?;
             let lc = hoist_const_operand(ctx, &args[1], lc, &rt);
             let hc = hoist_const_operand(ctx, &args[2], hc, &rt);
+            if ctx.checked_scalars {
+                return Ok((format!("({xc}).max({lc}).min({hc})"), common));
+            }
             Ok((format!("({}).clamp({}, {})", xc, lc, hc), common))
         }
         _ => Err(()),
     }
 }
 
-/// Format f64 as unambiguous native float literal
+/// Format an f64 literal so it is always a valid backend float literal. backend's
+/// `Display` for f64 round-trips; the `f64` suffix fixes the type and makes
+/// integer-valued floats (e.g. `2` → `2f64`) unambiguous.
 fn fmt_f64(x: f64) -> String {
     format!("{}f64", x)
 }
 
-// runtime preamble
+// ────────────────────────────── runtime preamble ──────────────────────────────
 
-/// Preamble prepended to every transpiled J2 program
+/// This is prepended to every transpiled J program. It pulls in j2_runtime
+/// and defines small helpers (`__bind`, `__get`, `__call`, `__pipe`,
+/// `__filter`, `__index`, `__member`, `__range`, `__materialize`,
+/// `new_env`, `new_env_with_parent`) that the lowered code references.
 pub const PREAMBLE: &str = r###"
 use j2_runtime::prelude::*;
 use j2_runtime::value::{J2Value, J2Func, J2FuncClause};
@@ -3504,42 +4227,56 @@ use std::rc::Rc;
 #[derive(Clone)]
 struct Env {
     table: HashMap<String, (J2Value, bool)>,
-    /// names declared in this scope, not inherited
+    /// Names actually *declared* in this scope (vs inherited from GLOBALS /
+    /// builtins, which are copied into `table`). A binding shadows an
+    /// inherited name freely; only re-binding a name already in `locals` is
+    /// subject to the constant-reassignment rule. This lets a function-local
+    /// `x = …` shadow a same-named top-level constant.
     locals: std::collections::HashSet<String>,
 }
 
 type EnvRef = Rc<RefCell<Env>>;
 
 thread_local! {
-    /// registry of user top-level bindings
+    /// Global registry of user-defined top-level bindings (funcs + globals).
+    /// Function bodies seed their fresh envs from this so recursion and
+    /// cross-function calls work without lexical capture.
     static GLOBALS: RefCell<HashMap<String, (J2Value, bool)>> = RefCell::new(HashMap::new());
-    /// holds a `give` value during unwinding
+    /// Carries the value of a `give` (early return) while the GiveSignal error
+    /// unwinds to the enclosing function/lambda body. Set by `give`, taken by
+    /// the body wrapper. A stack so nested calls don't clobber each other.
     static GIVE_SLOT: RefCell<Vec<J2Value>> = const { RefCell::new(Vec::new()) };
 }
 
-/// push `give` value, return unwind signal
+/// Push the `give` value and return the unwinding signal. Generated `give`
+/// statements call this; the body wrapper catches the signal and pops it.
 fn __give(v: J2Value) -> J2Err {
     GIVE_SLOT.with(|g| g.borrow_mut().push(v));
     J2Err::give_signal()
 }
 
-/// pop the latest `give` value
+/// Pop the most recent `give` value (called by the body wrapper when it
+/// catches a GiveSignal). Defaults to Null if somehow empty.
 fn __take_give() -> J2Value {
     GIVE_SLOT.with(|g| g.borrow_mut().pop()).unwrap_or(J2Value::Null)
 }
 
 thread_local! {
-    /// current top-level source line, 0 unknown
+    /// Source line of the top-level statement currently executing, for
+    /// annotating runtime errors. 0 = unknown.
     static CURRENT_LINE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn __set_line(n: usize) { CURRENT_LINE.with(|c| c.set(n)); }
 fn __current_line() -> usize { CURRENT_LINE.with(|c| c.get()) }
 
 thread_local! {
-    /// last panic message from the quiet hook
+    /// Last panic message captured by the quiet hook, consumed when a native
+    /// panic is converted to a J runtime error.
     static PANIC_MSG: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
-/// quiet panic hook, capture message, no backtrace
+/// Install a quiet panic hook: capture the message (suppressing the default
+/// backtrace) so `catch_unwind` in `main` can report it as a J error. Honors
+/// RUST_BACKTRACE=1 by also printing, for debugging the toolchain itself.
 fn __install_panic_hook() {
     let verbose = std::env::var("RUST_BACKTRACE").map(|v| v != "0").unwrap_or(false);
     std::panic::set_hook(Box::new(move |info| {
@@ -3583,7 +4320,7 @@ fn new_env() -> EnvRef {
 }
 
 fn new_env_with_parent() -> EnvRef {
-    // fresh env seeded with builtins and globals
+    // Fresh env seeded with builtins + every globally registered user binding.
     let env = new_env();
     GLOBALS.with(|g| {
         let g = g.borrow();
@@ -3595,9 +4332,12 @@ fn new_env_with_parent() -> EnvRef {
     env
 }
 
-/// bind in env, register funcs and globals
+/// Bind in the current env. If the binding is a user-defined function or a
+/// "global" form, also register it in GLOBALS so function bodies see it.
 fn __bind(env: &EnvRef, name: &str, value: J2Value, mutable: bool) -> J2Result<()> {
-    // inside a method, write fields through `this`
+    // If we're inside a class method and `name` is a field on `this`,
+    // write through to the instance. This is how method bodies see
+    // `x = x + dx` mutate the instance.
     let wrote_to_instance = METHOD_THIS.with(|t| {
         if let Some(inst) = t.borrow().last() {
             let mut i = inst.lock().unwrap();
@@ -3609,7 +4349,9 @@ fn __bind(env: &EnvRef, name: &str, value: J2Value, mutable: bool) -> J2Result<(
         false
     });
     if wrote_to_instance { return Ok(()); }
-    // same-name funcs merge into multi-clause
+    // Multi-clause function support: if both old and new are Func with the
+    // same name, merge them (old clauses first so pattern-match clauses
+    // come before the catch-all body).
     let existing = env.borrow().table.get(name).cloned();
     if let (Some((J2Value::Func(old), _)), J2Value::Func(new)) = (existing.as_ref(), &value) {
         let mut clauses: Vec<J2FuncClause> = Vec::with_capacity(old.clauses.len() + new.clauses.len());
@@ -3642,17 +4384,21 @@ fn __bind(env: &EnvRef, name: &str, value: J2Value, mutable: bool) -> J2Result<(
         }
         return Ok(());
     }
-    // constant reassignment check, this scope only
+    // Non-merge path. The constant-reassignment rule applies only to names
+    // already *declared in this scope* (`locals`); a name merely inherited
+    // from GLOBALS/builtins is shadowed by a fresh local declaration. This
+    // lets a function-local `x = …` shadow a same-named top-level constant.
     let in_locals = env.borrow().locals.contains(name);
     let effective_mutable = match existing {
-        Some((_, true)) if in_locals => true,  // rebinding a mutable local stays mutable
+        Some((_, true)) if in_locals => true, // re-binding a mutable local → stays mutable
         Some((_, false)) if in_locals => {
             return Err(J2Err::mutability(format!("\"{}\" is a constant and cannot be reassigned", name)));
         }
-        // absent or inherited, declare fresh here
+        // Absent, or inherited (not in locals): a fresh declaration in this
+        // scope that takes the new binding's own mutability.
         _ => mutable,
     };
-    // funcs go to GLOBALS for recursion
+    // Funcs always go to GLOBALS so recursion / cross-fn calls work.
     if matches!(value, J2Value::Func(_)) {
         GLOBALS.with(|g| {
             g.borrow_mut().insert(name.to_string(), (value.clone(), effective_mutable));
@@ -3666,14 +4412,21 @@ fn __bind(env: &EnvRef, name: &str, value: J2Value, mutable: bool) -> J2Result<(
     Ok(())
 }
 
-/// bind a parameter as fresh mutable local
+/// Bind a function parameter. A parameter is always a fresh local that
+/// *shadows* any same-named outer binding (global constant, builtin, or
+/// function), so the constant-reassignment check, the multi-clause func
+/// merge, and the `this`-field write-through in `__bind` must all be
+/// bypassed: none of them apply to a parameter. Inserted directly into the
+/// call's fresh env as a mutable local (J lets a body reassign its params).
 fn __bind_param(env: &EnvRef, name: &str, value: J2Value) {
     let mut e = env.borrow_mut();
     e.table.insert(name.to_string(), (value, true));
     e.locals.insert(name.to_string()); // a parameter is declared in this scope
 }
 
-/// promote a name to GLOBALS
+/// Promote a name from env to GLOBALS so functions defined later can
+/// see it via `new_env_with_parent()`. Emitted by the lowerer only for
+/// top-level (depth==0) Bind/Global/CompoundAssign/IncDec statements.
 fn __globalize(env: &EnvRef, name: &str) {
     let v = env.borrow().table.get(name).cloned();
     if let Some(entry) = v {
@@ -3681,7 +4434,11 @@ fn __globalize(env: &EnvRef, name: &str) {
     }
 }
 
-/// runtime `J2Class` for a native class name
+/// Resolve a native class name to its runtime `J2Class` (registered as a
+/// `J2Value::Class` global by the dynamic `ClassLit` binding). Native
+/// boundary helpers (`box_instance_*`) use this so a struct boxed back into
+/// a `J2Value::Instance` shares the exact runtime class object the dynamic
+/// path uses: methods, statics and `extends` stay consistent.
 #[allow(dead_code)]
 fn __class_for(name: &str) -> J2Result<std::sync::Arc<j2_runtime::value::J2Class>> {
     let v = GLOBALS.with(|g| g.borrow().get(name).map(|(v, _)| v.clone()));
@@ -3692,7 +4449,8 @@ fn __class_for(name: &str) -> J2Result<std::sync::Arc<j2_runtime::value::J2Class
 }
 
 fn __rebind(env: &EnvRef, name: &str, value: J2Value) -> J2Result<()> {
-    // inside a method, write fields through `this`
+    // If currently inside a class method and `name` is a field on `this`,
+    // write through to the instance.
     let wrote_to_instance = METHOD_THIS.with(|t| {
         if let Some(inst) = t.borrow().last() {
             let mut i = inst.lock().unwrap();
@@ -3713,7 +4471,11 @@ fn __rebind(env: &EnvRef, name: &str, value: J2Value) -> J2Result<()> {
             }
             env.table.insert(name.to_string(), (value.clone(), true));
             drop(env);
-            // mirror top-level updates into GLOBALS
+            // If this name is also in GLOBALS (i.e. it was top-level),
+            // mirror the update so functions called later see the new
+            // value. Without this, `for i { x += [v] }` at top level
+            // updates env-x but leaves GLOBALS-x stale, and any function
+            // call sees the original empty seq.
             GLOBALS.with(|g| {
                 let mut g = g.borrow_mut();
                 if g.contains_key(name) {
@@ -3731,7 +4493,8 @@ fn __get(env: &EnvRef, name: &str) -> J2Result<J2Value> {
         let env = env.borrow();
         if let Some((v, _)) = env.table.get(name) { return Ok(v.clone()); }
     }
-    // in a method, bare names are fields
+    // Fallback: if we're inside a class method body, treat bare names
+    // as instance field accesses on the current `this`.
     if let Some(v) = METHOD_THIS.with(|t| {
         t.borrow().last().and_then(|inst| {
             inst.lock().unwrap().fields.get(name).cloned()
@@ -3743,21 +4506,65 @@ fn __get(env: &EnvRef, name: &str) -> J2Result<J2Value> {
 }
 
 thread_local! {
-    /// stack of active method `this` references
+    /// Stack of currently-executing-method `this` references.  When a
+    /// class method is called, the bound-method closure pushes the
+    /// instance Arc here; bare-name lookups inside the body resolve
+    /// against `this.fields` as a fallback.
     static METHOD_THIS: std::cell::RefCell<Vec<std::sync::Arc<std::sync::Mutex<j2_runtime::value::J2Instance>>>>
         = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+fn __same_seq_storage(a: &J2Value, b: &J2Value) -> bool {
+    match (a, b) {
+        (J2Value::Seq(a), J2Value::Seq(b)) => std::sync::Arc::ptr_eq(a, b),
+        (J2Value::SeqF64(a), J2Value::SeqF64(b)) => std::sync::Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn __unbox_exact_seq_f64(value: &J2Value) -> J2Result<Vec<f64>> {
+    if let J2Value::Seq(seq) = value {
+        if !seq.lock().unwrap().items.iter().all(|v| matches!(v, J2Value::Float(_))) {
+            return Err(J2Err::type_err("native transform requires a homogeneous float sequence"));
+        }
+    }
+    unbox_seq_f64(value)
+}
+
+fn __unbox_exact_seq_i64(value: &J2Value) -> J2Result<Vec<i64>> {
+    match value {
+        J2Value::Seq(seq) if seq.lock().unwrap().items.iter().all(|v| matches!(v, J2Value::Int(_))) => unbox_seq_i64(value),
+        _ => Err(J2Err::type_err("native transform requires a homogeneous int sequence")),
+    }
+}
+
+fn __native_result<T>(f: impl FnOnce() -> J2Result<T>) -> J2Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => match payload.downcast::<J2Err>() {
+            Ok(error) => Err(*error),
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+    }
+}
+
 fn __call(callee: J2Value, args: &[J2Value]) -> J2Result<J2Value> {
+    __native_result(|| __call_inner(callee, args))
+}
+
+fn __call_inner(callee: J2Value, args: &[J2Value]) -> J2Result<J2Value> {
     match &callee {
-        // calling a Class builds an Instance
+        // Calling a Class constructs a new Instance. Args can either be a
+        // single Map of name→value overrides (named form `Point(x: 3)`), or
+        // positional values applied to fields in declaration order
+        // (`Point(3, 4)`).
         J2Value::Class(c) => {
             let mut fields = c.field_defaults.clone();
             if let Some(J2Value::Map(m)) = args.get(0) {
                 let m = m.lock().unwrap();
                 for (k, v) in m.iter() { fields.insert(k.clone(), v.clone()); }
             } else if !args.is_empty() {
-                // positional args zip to fields in order
+                // Positional: zip args to fields in declaration order.
                 for (name, v) in c.field_order.iter().zip(args.iter()) {
                     fields.insert(name.clone(), v.clone());
                 }
@@ -3804,7 +4611,9 @@ fn __pipe(lhs: J2Value, rhs: J2Value) -> J2Result<J2Value> {
             Ok(J2Value::seq(out))
         }
         J2Value::Flow(_) => {
-            // materialize flow via __pipe per value
+            // Materialize the flow lazily by reusing __pipe over each yielded value
+            // (this still requires bounding upstream; transpiler enforces `until`
+            // when the flow is open).
             let items = __materialize(&lhs)?;
             let mut out = Vec::with_capacity(items.len());
             for v in items { out.push(__call(rhs.clone(), &[v])?); }
@@ -3815,7 +4624,8 @@ fn __pipe(lhs: J2Value, rhs: J2Value) -> J2Result<J2Value> {
 }
 
 fn __filter(lhs: J2Value, rhs: J2Value) -> J2Result<J2Value> {
-    // filter `lhs` by predicate `rhs`
+    // Filter `lhs` by predicate `rhs`. For a seq/flow, keep elements where rhs is truthy.
+    // For a scalar, return it iff predicate is truthy, else null.
     let pred = |v: &J2Value| -> J2Result<bool> {
         let r = __call(rhs.clone(), &[v.clone()])?;
         Ok(r.truthy())
@@ -3844,13 +4654,15 @@ fn __filter(lhs: J2Value, rhs: J2Value) -> J2Result<J2Value> {
 }
 
 fn __index(coll: &J2Value, idx: &J2Value) -> J2Result<J2Value> {
-    // map indexed by runtime text key
+    // Map indexed by text key - `m[lane]` with a runtime-computed key.
     if let (J2Value::Map(m), J2Value::Text(k)) = (coll, idx) {
         let m = m.lock().unwrap();
         return m.get(k.as_str()).cloned()
             .ok_or_else(|| J2Err::key(format!("key {:?} not found in map", k.as_str())));
     }
-    // slice or gather, ranges are inclusive
+    // Slice / gather: `coll[a..b]` (a Range lowers to a Flow; J ranges are
+    // inclusive so `1..3` → indices 1,2,3) or `coll[[i,j,...]]` (a seq of
+    // indices). Produces a new seq (or text) of the gathered elements.
     if matches!(idx, J2Value::Flow(_) | J2Value::Seq(_) | J2Value::SeqF64(_)) {
         let indices = __materialize(idx)?;
         match coll {
@@ -3928,7 +4740,8 @@ fn __member(obj: &J2Value, field: &str) -> J2Result<J2Value> {
                 let inst_clone = inst.clone();
                 return Ok(J2Value::Builtin(
                     std::sync::Arc::new(move |args: &[J2Value]| -> J2Result<J2Value> {
-                        // push `this` so bare names hit fields
+                        // Push `this` onto the method stack so __get / __bind
+                        // / __rebind for bare identifiers route to fields.
                         METHOD_THIS.with(|t| t.borrow_mut().push(inst_clone.clone()));
                         let f = &m.func;
                         let result = if let Some(clause) = f.clauses.first() {
@@ -3958,13 +4771,17 @@ fn __static_get(class_val: &J2Value, member: &str) -> J2Result<J2Value> {
     }
 }
 
-/// snapshot env keys at scope start
+/// Snapshot env key-set at the start of a fresh scope (loop iteration,
+/// function body). Used to discard bindings introduced inside the scope.
 fn __scope_enter(env: &EnvRef) -> (Vec<String>, Vec<String>) {
     let e = env.borrow();
     (e.table.keys().cloned().collect(), e.locals.iter().cloned().collect())
 }
 
-/// drop bindings not in snapshot, restore locals
+/// Remove any binding not present in the snapshot and restore the declared-
+/// locals set. Restores the env to its pre-scope shape so each loop iteration
+/// (and each block) re-declares its locals from scratch: without this a
+/// second iteration's `x = …` would see `x` as an already-declared constant.
 fn __scope_leave(env: &EnvRef, snapshot: (Vec<String>, Vec<String>)) {
     use std::collections::HashSet;
     let (keys, locals) = snapshot;
@@ -3974,7 +4791,9 @@ fn __scope_leave(env: &EnvRef, snapshot: (Vec<String>, Vec<String>)) {
     env.locals = locals.into_iter().collect();
 }
 
-/// does raised error class match catch class
+/// Class-typed try/catch dispatch: returns true if the runtime-raised
+/// error class `kind` is the given class `name` or a subclass of it.
+/// Backed by the existing J2ErrKind hierarchy in j2_runtime/src/error.rs.
 #[allow(dead_code)]
 fn __kind_matches(kind: &str, name: &str) -> bool {
     match name {
@@ -4048,7 +4867,7 @@ fn __materialize(v: &J2Value) -> J2Result<Vec<J2Value>> {
             if f.lock().unwrap().is_infinite() {
                 return Err(J2Err::infinite_flow("cannot consume an infinite flow without until"));
             }
-            let mut flow = std::mem::replace(&mut *f.lock().unwrap(), J2Flow::range(0, -1));
+            let mut flow = std::mem::replace(&mut *f.lock().unwrap(), J2Flow::empty());
             flow.collect_all()
         }
         J2Value::Text(t) => Ok(t.chars().map(|c| J2Value::text(c.to_string())).collect()),

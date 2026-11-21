@@ -1,4 +1,8 @@
-// Arc/Mutex so J2Value is Send + Sync
+// J2Value: runtime representation of every J value.
+//
+// We use Arc + Mutex (rather than Rc + RefCell) so J2Value is Send + Sync.
+// The parallel paths in parallel.rs spawn worker threads with J2Value slices;
+// without thread-safe smart pointers those paths wouldn't compile.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,7 +20,13 @@ pub enum J2Value {
     Float(f64),
     Text(Arc<String>),
     Seq(Arc<Mutex<J2Seq>>),
-    /// Packed float seq, native-only; avoids per-element boxing
+    /// Packed float sequence: semantically identical to a `Seq` whose items
+    /// are all `Float`, but stored as a contiguous `Vec<f64>` so native
+    /// numeric code crosses the dynamic↔native boundary without per-element
+    /// box/unbox (the headline perf win for repeated kernels). Produced ONLY
+    /// by the native path (`convert::box_seq_f64`); the dynamic oracle never
+    /// creates one, so the differential harness flags any operation that fails
+    /// to treat it identically to the equivalent boxed `Seq`.
     SeqF64(Arc<Mutex<Vec<f64>>>),
     Flow(Arc<Mutex<J2Flow>>),
     Pair(Arc<(J2Value, J2Value)>),
@@ -24,9 +34,11 @@ pub enum J2Value {
     Cond(Arc<dyn Fn(&J2Value) -> J2Result<bool> + Send + Sync>),
     Builtin(Arc<dyn Fn(&[J2Value]) -> J2Result<J2Value> + Send + Sync>, &'static str),
     Func(Arc<J2Func>),
-    /// User class; calling it constructs an instance
+    /// User-defined class.  Calling a Class like a function constructs an
+    /// instance.  Methods are stored as `J2Func`s keyed by name.
     Class(Arc<J2Class>),
-    /// Instance of a Class
+    /// Instance of a Class.  Holds owned field state and a pointer to its
+    /// class for method dispatch.
     Instance(Arc<Mutex<J2Instance>>),
 }
 
@@ -34,15 +46,17 @@ pub enum J2Value {
 #[derive(Debug)]
 pub struct J2Class {
     pub name: String,
-    /// Names of base classes
+    /// Names of base classes (resolved at construction time via GLOBALS).
     pub extends: Vec<String>,
-    /// Field names in declaration order
+    /// Field names in declaration order: used to apply positional
+    /// construction args (`Point(3, 4)`) to the right fields.
     pub field_order: Vec<String>,
     /// Field default values (cloned per-instance on construction).
     pub field_defaults: HashMap<String, J2Value>,
-    /// Instance methods; `mutating` flag tracked for optimizations
+    /// Instance methods.  Pure (`=`) and mutating (`:=`) both end up here;
+    /// the `mutating` flag is tracked for optimizations.
     pub methods: HashMap<String, Arc<J2ClassMethod>>,
-    /// Static (`::`) members stored on the class
+    /// Static (`::`) members: values or fns stored on the class itself.
     pub statics: Mutex<HashMap<String, J2Value>>,
 }
 
@@ -58,7 +72,7 @@ impl std::fmt::Debug for J2ClassMethod {
     }
 }
 
-/// Instance state, fields plus back-pointer to Class
+/// Instance state: field bindings + a back-pointer to the Class.
 #[derive(Debug)]
 pub struct J2Instance {
     pub class: Arc<J2Class>,
@@ -116,7 +130,9 @@ impl fmt::Display for J2Value {
                 }
                 write!(f, "]")
             }
-            // same rendering as boxed Float seq, byte-for-byte
+            // Identical rendering to a boxed `Seq` of `Float`s - each element
+            // uses the exact same float formatting, so output matches the
+            // dynamic oracle byte-for-byte.
             Self::SeqF64(s) => {
                 let s = s.lock().unwrap_or_else(|p| p.into_inner());
                 write!(f, "[")?;
@@ -159,7 +175,10 @@ impl J2Value {
     pub fn seq(items: Vec<J2Value>) -> Self { Self::Seq(Arc::new(Mutex::new(J2Seq { items }))) }
     /// Packed float-sequence constructor (the native fast path).
     pub fn seq_f64(v: Vec<f64>) -> Self { Self::SeqF64(Arc::new(Mutex::new(v))) }
-    /// Materialize any sequence form
+    /// Materialize any sequence form (boxed `Seq` or packed `SeqF64`) into a
+    /// `Vec<J2Value>`; `None` for non-sequences. O(n): used by dynamic
+    /// operations that need element-wise `J2Value` access (rare for `SeqF64`,
+    /// which lives on the native hot path).
     pub fn seq_elems(&self) -> Option<Vec<J2Value>> {
         match self {
             Self::Seq(s) => Some(s.lock().unwrap_or_else(|p| p.into_inner()).items.clone()),
@@ -170,7 +189,9 @@ impl J2Value {
         }
     }
 
-    /// Normalize any seq to a boxed `Seq`
+    /// Normalize any seq to a boxed `Seq` (cloning a packed `SeqF64` into
+    /// boxed `Float`s); returns `self` clone for non-seqs. Lets a dynamic
+    /// builtin handle a packed seq by re-dispatching on the boxed form.
     pub fn to_boxed_seq(&self) -> J2Value {
         match self.seq_elems() {
             Some(items) => J2Value::seq(items),
@@ -264,7 +285,9 @@ impl J2Value {
     }
 
     pub fn add(&self, other: &Self) -> J2Result<Self> {
-        // seq + seq concatenates; text too
+        // Seq + seq → concatenation. Spec describes seqs as ordered
+        // collections; concatenation via + is the natural growth
+        // operation. Strings (text vals) concatenate too.
         if let (Some(mut out), Some(b)) = (self.seq_elems(), other.seq_elems()) {
             out.extend(b);
             return Ok(J2Value::seq(out));
@@ -285,7 +308,11 @@ impl J2Value {
         let a = self.as_num_f64()?;
         let r = a / b;
         if let (Self::Int(x), Self::Int(y)) = (self, other) {
-            if *y != 0 && x % y == 0 { return Ok(Self::Int(x / y)); }
+            match x.checked_rem(*y) {
+                Some(0) => return Ok(Self::Int(x / y)),
+                None => return Err(J2Err::overflow("result exceeds MAX_VAL")),
+                _ => {}
+            }
         }
         Ok(Self::Float(r))
     }
@@ -293,7 +320,7 @@ impl J2Value {
         let b = other.as_num_f64()?;
         if b == 0.0 { return Err(J2Err::zero_div("modulo by zero")); }
         if let (Self::Int(x), Self::Int(y)) = (self, other) {
-            return Ok(Self::Int(x.rem_euclid(*y)));
+            return Ok(Self::Int((*x as i128).rem_euclid(*y as i128) as i64));
         }
         Ok(Self::Float(self.as_num_f64()? % b))
     }
@@ -306,7 +333,7 @@ impl J2Value {
         if let (Self::Int(x), Self::Int(y)) = (self, other) {
             if *y >= 0 {
                 let mut r = 1i64;
-                let mut e = *y as u32;
+                let mut e = *y as u64;
                 let mut base = *x;
                 while e > 0 {
                     if e & 1 == 1 { r = r.checked_mul(base).ok_or_else(|| J2Err::overflow("result exceeds MAX_VAL"))?; }
@@ -320,14 +347,17 @@ impl J2Value {
     }
     pub fn neg(&self) -> J2Result<Self> {
         match self {
-            Self::Int(n) => Ok(Self::Int(-n)),
+            Self::Int(n) => n.checked_neg().map(Self::Int).ok_or_else(|| J2Err::overflow("result exceeds MAX_VAL")),
             Self::Float(x) => Ok(Self::Float(-x)),
             _ => Err(J2Err::type_err(format!("unary minus on non-number ({})", self.type_name()))),
         }
     }
 
     pub fn eq(&self, other: &Self) -> bool {
-        // seq comparison element-wise; packed equals boxed twin
+        // Any seq-vs-seq comparison (boxed `Seq` and/or packed `SeqF64`) is
+        // element-wise equal. Handling it up front means a packed float seq
+        // compares equal to its boxed-float twin (so native==dynamic), and a
+        // single path covers all four variant combinations.
         if let (Some(a), Some(b)) = (self.seq_elems(), other.seq_elems()) {
             return a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.eq(y));
         }
@@ -364,7 +394,8 @@ impl J2Value {
     }
 }
 
-/// Render a float exactly as J2 does
+/// Render a float exactly as J does (shared by `Float` and `SeqF64` Display so
+/// a packed seq prints byte-identically to its boxed-float twin).
 fn fmt_jfloat(x: f64, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if x.is_nan() {
         write!(f, "NaN")
@@ -397,5 +428,25 @@ fn numeric_binop(
         _ => Err(J2Err::type_err(format!(
             "cannot {} {} and {}", op_name, a.type_name(), b.type_name(),
         ))),
+    }
+}
+
+#[cfg(test)]
+mod v2_numeric_tests {
+    use super::J2Value;
+    use crate::error::J2ErrKind;
+
+    #[test]
+    fn integer_endpoints_report_overflow_without_panicking() {
+        assert_eq!(J2Value::Int(i64::MIN).neg().unwrap_err().kind, J2ErrKind::OverflowError);
+        assert_eq!(J2Value::Int(i64::MIN).div(&J2Value::Int(-1)).unwrap_err().kind, J2ErrKind::OverflowError);
+        assert!(matches!(J2Value::Int(i64::MIN).rem(&J2Value::Int(-1)), Ok(J2Value::Int(0))));
+    }
+
+    #[test]
+    fn integer_power_does_not_truncate_large_exponents() {
+        assert!(matches!(J2Value::Int(0).pow(&J2Value::Int(1i64 << 32)), Ok(J2Value::Int(0))));
+        assert!(matches!(J2Value::Int(-1).pow(&J2Value::Int((1i64 << 32) + 1)), Ok(J2Value::Int(-1))));
+        assert_eq!(J2Value::Int(2).pow(&J2Value::Int(1i64 << 32)).unwrap_err().kind, J2ErrKind::OverflowError);
     }
 }

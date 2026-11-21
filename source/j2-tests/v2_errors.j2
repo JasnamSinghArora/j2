@@ -1,0 +1,66 @@
+# Checked failures must cross worker/native boundaries as catchable J2 errors.
+func add_one(xs: seq<int>) -> seq<int> = map(xs, _ + 1)
+large = make_seq(33000, 9223372036854775807)
+try {
+    add_one(large)
+    assert false, "integer overflow was lost"
+} else OverflowError { print("caught integer overflow") }
+
+func divide(xs: seq<float>) -> seq<float> = map(xs, _ / 0.0)
+floats = make_seq(33000, 1.0)
+try {
+    divide(floats)
+    assert false, "division by zero was lost"
+} else ZeroDivisionError { print("caught division by zero") }
+
+func roots(xs: seq<float>) -> seq<float> = map(xs, sqrt)
+negative = make_seq(33000, -1.0)
+try {
+    roots(negative)
+    assert false, "sqrt domain error was lost"
+} else ValueError { print("caught sqrt domain error") }
+
+func rounding(xs: seq<float>) -> seq<int> = map(xs, round)
+nonfinite = make_seq(33000, INF)
+try {
+    rounding(nonfinite)
+    assert false, "rounding error was lost"
+} else ValueError { print("caught rounding error") }
+
+minimum = -9223372036854775807 - 1
+func negate(xs: seq<int>) -> seq<int> = map(xs, -_)
+try {
+    negate([minimum])
+    assert false, "negation overflow was lost"
+} else OverflowError { print("caught negation overflow") }
+func modulo(xs: seq<int>) -> seq<int> = map(xs, _ % -1)
+assert_eq(modulo([minimum]), [0])
+assert_eq(pow(0, 4294967296), 0)
+
+# Value-dependent integer division/power and mixed inputs retain dynamic precision.
+integers = [9007199254740993, 3]
+quotients = map(integers, _ / 1)
+assert_eq(str(quotients[0]), "9007199254740993")
+assert_eq(map([2, 3], _ ** 3), [8, 27])
+mixed = [9007199254740993, 0.5]
+shifted = map(mixed, _ + 1)
+assert_eq(str(shifted[0]), "9007199254740994")
+assert_eq(shifted[1], 1.5)
+
+# Closed ranges include both endpoints without overflowing.
+assert_eq(collect(9223372036854775807..9223372036854775807), [9223372036854775807])
+assert_eq(collect(3..1), [3, 2, 1])
+countdown := 0
+for i in 3..1 { countdown += 1 }
+assert_eq(countdown, 3)
+func consume_once(n: int) -> seq<int> = {
+    stream = 1..n
+    first = map(stream, _ + 1)
+    map(stream, _ + 1)
+}
+assert_eq(consume_once(3), [])
+original := collect(1..3)
+alias := original
+for i in 1..2 { original[i] = alias[i - 1] }
+assert_eq(original, [1, 1, 1])
+print("v2 errors: ok")

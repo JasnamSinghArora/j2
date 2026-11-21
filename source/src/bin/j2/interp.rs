@@ -1,4 +1,17 @@
-//! Tree-walking J2 interpreter, falls back to compilation
+//! A direct tree-walking interpreter over the J AST, for instant startup on
+//! simple programs (no backend compile). It reuses j2_runtime's `J2Value` + the
+//! same builtin set as the compiled dynamic path, and mirrors the dynamic
+//! lowering's semantics. Any construct it does not handle returns
+//! `IErr::Unsupported`, and `j2 run` falls back to compilation - so the
+//! interpreter can only make things faster, never change behavior. Its
+//! output must match the compiled path (gated by the differential harness;
+//! `j2 run --check` runs both and compares).
+//!
+//! Intentionally NOT supported (→ fallback to compile): classes, lambda
+//! values / higher-order calls, closures, pipes/filters/cond, `try`, the
+//! `rust{}` escape hatch, flow combinators, multi-clause / pattern functions,
+//! and `global`. These keep the interpreter small and divergence-free; the
+//! compiled path handles them.
 
 use std::collections::HashMap;
 
@@ -7,7 +20,8 @@ use j2_runtime::error::J2Err;
 use j2_runtime::prelude::*;
 use j2_runtime::value::J2Value;
 
-/// Unsupported construct or genuine J2 runtime error
+/// Interpreter error: either an unsupported construct (caller should fall back
+/// to compilation) or a genuine J runtime error.
 pub enum IErr {
     Unsupported,
     J(J2Err),
@@ -28,11 +42,16 @@ enum Flow {
 }
 
 struct Interp {
-    /// Scope stack; `frames[0]` global, bindings carry mutability
+    /// Scope stack. `frames[0]` is the global scope (top-level bindings); the
+    /// last frame is the current function call. J functions see their own
+    /// params + globals + builtins, NOT the caller's locals. Each binding
+    /// carries a mutability flag (`=` constant vs `:=` mutable) so the
+    /// constant-reassignment rule matches the compiled path.
     frames: Vec<HashMap<String, (J2Value, bool)>>,
     builtins: HashMap<String, J2Value>,
     funcs: HashMap<String, (Vec<Param>, FuncBody)>,
-    /// Source line of the statement currently executing
+    /// Source line of the statement currently executing (for error messages),
+    /// matching the compiled path's per-statement tracking. 0 = unknown.
     cur_line: usize,
 }
 
@@ -79,11 +98,14 @@ impl Interp {
         self.builtins.get(name).cloned()
     }
 
-    /// Bind var; same-scope constant rebind errors
+    /// A user binding (`=` constant / `:=` mutable). Mirrors the compiled
+    /// `__bind`: re-binding a name already declared-as-constant in *this*
+    /// scope errors; an inherited global/builtin is freely shadowed; a
+    /// mutable binding can be re-bound (staying mutable).
     fn bind(&mut self, name: &str, v: J2Value, mutable: bool) -> IRes<()> {
         let frame = self.frames.last_mut().unwrap();
         let eff = match frame.get(name) {
-            Some((_, true)) => true,  // re-bind a mutable local -> stays mutable
+            Some((_, true)) => true,  // re-bind a mutable local → stays mutable
             Some((_, false)) => {
                 return Err(IErr::J(J2Err::mutability(format!(
                     "\"{}\" is a constant and cannot be reassigned",
@@ -96,12 +118,14 @@ impl Interp {
         Ok(())
     }
 
-    /// Fresh mutable local, no constant check
+    /// Unconditional local binding (parameters, loop variables): always a
+    /// fresh mutable local that shadows outer scope; no constant check.
     fn force_set(&mut self, name: &str, v: J2Value) {
         self.frames.last_mut().unwrap().insert(name.to_string(), (v, true));
     }
 
-    /// Reassign an existing binding
+    /// Reassign an existing binding (compound-assign / inc-dec). Errors if it
+    /// is a constant. Searches the current frame, then globals.
     fn reassign(&mut self, name: &str, v: J2Value) -> IRes<()> {
         let top = self.frames.len() - 1;
         for idx in [top, 0] {
@@ -154,7 +178,8 @@ impl Interp {
                         .get(field)
                         .cloned()
                         .ok_or_else(|| IErr::J(J2Err::key(format!("no field {}", field))))?,
-                    // No classes, so non-map member access errors
+                    // No classes in a supported program, so a non-map member
+                    // access is a genuine type error (matches the compiled path).
                     _ => return Err(IErr::J(J2Err::type_err(format!(
                         "cannot access field {} on {}",
                         field,
@@ -178,20 +203,16 @@ impl Interp {
             }
             Expr::Pair(a, b) => J2Value::pair(self.eval(a)?, self.eval(b)?),
             Expr::Range { start, end } => {
-                // Eager inclusive range -> seq
+                // Eager inclusive range → seq (matches J `a..b`). Open-ended
+                // ranges (flows) fall back to the compiled path.
                 let Some(end) = end else { return Err(IErr::Unsupported) };
                 let s = self.eval(start)?.as_num_i64()?;
                 let e = self.eval(end)?.as_num_i64()?;
-                let mut v = Vec::new();
-                let mut i = s;
-                while i <= e {
-                    v.push(J2Value::Int(i));
-                    i += 1;
-                }
-                J2Value::seq(v)
+                J2Value::seq(inclusive_range_items(s, e))
             }
             Expr::Call { callee, args } => return self.eval_call(callee, args),
-            // Lambdas, classes, blocks etc need compile path
+            // Lambdas, cond-lambdas, class literals, rust blocks, static
+            // access, builtin consts, underscore, block-expr → compile path.
             _ => return Err(IErr::Unsupported),
         })
     }
@@ -245,7 +266,8 @@ impl Interp {
                 }
                 Ok(s.items[idx as usize].clone())
             }
-            // Packed float seq indexes like boxed
+            // Packed float seq (e.g. from make_seq with a float init): index
+            // identically to a boxed float seq.
             J2Value::SeqF64(s) => {
                 let s = s.lock().unwrap();
                 let n = s.len() as i64;
@@ -289,7 +311,7 @@ impl Interp {
 
     fn call_user(&mut self, params: &[Param], body: &FuncBody, argv: Vec<J2Value>) -> IRes<J2Value> {
         if params.iter().any(|p| p.pattern.is_some()) {
-            return Err(IErr::Unsupported); // pattern/multi-clause -> compile path
+            return Err(IErr::Unsupported); // pattern/multi-clause → compile path
         }
         if argv.len() != params.len() {
             return Err(IErr::J(J2Err::type_err(format!(
@@ -314,7 +336,8 @@ impl Interp {
         result
     }
 
-    /// Run block, return first non-Normal flow
+    /// Execute a block, returning the first non-Normal control flow. `lines`
+    /// is parallel to `stmts` (for error-location tracking).
     fn exec_block(&mut self, stmts: &[Stmt], lines: &[usize]) -> IRes<Flow> {
         for (i, s) in stmts.iter().enumerate() {
             if let Some(&ln) = lines.get(i) {
@@ -472,13 +495,15 @@ impl Interp {
             Stmt::Expr(e) => {
                 self.eval(e)?;
             }
-            // Loop, DoRepeat, Try, Global need compile path
+            // Loop (infinite), DoRepeat, Try, Global → compile path.
             _ => return Err(IErr::Unsupported),
         }
         Ok(Flow::Normal)
     }
 
-    /// Execute a nested block with per-block scoping
+    /// Execute a nested block with per-block scoping: names introduced inside
+    /// are removed afterward (mirrors the compiled path's scope enter/leave),
+    /// so a loop body re-declares cleanly each iteration.
     fn exec_scoped(&mut self, stmts: &[Stmt], lines: &[usize]) -> IRes<Flow> {
         let snapshot: Vec<String> = self.frames.last().unwrap().keys().cloned().collect();
         let flow = self.exec_block(stmts, lines)?;
@@ -489,17 +514,12 @@ impl Interp {
     }
 
     fn iter_items(&mut self, iter: &Expr) -> IRes<Vec<J2Value>> {
-        // `for i in a..b`
+        // `for i in a..b` uses the same inclusive, bidirectional range as
+        // an expression. Never advance beyond an i64 endpoint.
         if let Expr::Range { start, end: Some(end) } = iter {
             let s = self.eval(start)?.as_num_i64()?;
             let e = self.eval(end)?.as_num_i64()?;
-            let mut v = Vec::new();
-            let mut i = s;
-            while i <= e {
-                v.push(J2Value::Int(i));
-                i += 1;
-            }
-            return Ok(v);
+            return Ok(inclusive_range_items(s, e));
         }
         match self.eval(iter)? {
             J2Value::Seq(s) => Ok(s.lock().unwrap().items.clone()),
@@ -509,7 +529,8 @@ impl Interp {
     }
 
     fn run(&mut self, prog: &Program) -> IRes<()> {
-        // Register all functions first for forward refs
+        // First pass: register all top-level functions (so forward references
+        // and recursion resolve), matching the compiled path's globalization.
         for s in &prog.items {
             if let Stmt::Func { name, params, body, .. } = s {
                 self.funcs.insert(name.clone(), (params.clone(), body.clone()));
@@ -531,7 +552,23 @@ impl Interp {
     }
 }
 
-/// Whole-program check; partial interpretation would duplicate effects
+/// Match J2Flow's inclusive ascending/descending range semantics. Rust's
+/// RangeInclusive stops at the endpoint without incrementing past it, so
+/// both i64::MAX and i64::MIN remain valid terminal values.
+fn inclusive_range_items(start: i64, end: i64) -> Vec<J2Value> {
+    if start <= end {
+        (start..=end).map(J2Value::Int).collect()
+    } else {
+        (end..=start).rev().map(J2Value::Int).collect()
+    }
+}
+
+/// Conservative structural check: can the interpreter run this ENTIRE program
+/// without ever hitting an unsupported construct mid-run? Only if so do we
+/// interpret: otherwise we compile directly, never partially-interpreting
+/// (which would duplicate side effects on fallback). Returns false for any
+/// construct outside the interpreter's subset; runtime *type* mismatches are
+/// NOT a reason (those become genuine errors, matching the compiled path).
 pub fn supported(prog: &Program) -> bool {
     let funcs: std::collections::HashSet<&str> = prog
         .items
@@ -580,7 +617,7 @@ fn stmt_ok(s: &Stmt, f: &std::collections::HashSet<&str>) -> bool {
             expr_ok(cond, f) && msg.as_ref().map(|m| expr_ok(m, f)).unwrap_or(true)
         }
         Stmt::Expr(e) => expr_ok(e, f),
-        // Loop, DoRepeat, Try, Global need compile path
+        // Loop (infinite), DoRepeat, Try, Global → compile path.
         _ => false,
     }
 }
@@ -595,7 +632,8 @@ fn funcbody_ok(b: &FuncBody, f: &std::collections::HashSet<&str>) -> bool {
 fn expr_ok(e: &Expr, f: &std::collections::HashSet<&str>) -> bool {
     match e {
         Expr::IntLit(_) | Expr::FloatLit(_) | Expr::TextLit(_) | Expr::Bool(_) | Expr::Null => true,
-        // Function-as-value (HOF) unsupported, compile it
+        // A bare identifier naming a user function = function-as-value (HOF) -
+        // not supported; compile it.
         Expr::Ident(n) => !f.contains(n.as_str()),
         Expr::Unary { operand, .. } => expr_ok(operand, f),
         Expr::Binary { lhs, rhs, .. } => expr_ok(lhs, f) && expr_ok(rhs, f),
@@ -604,20 +642,25 @@ fn expr_ok(e: &Expr, f: &std::collections::HashSet<&str>) -> bool {
         Expr::SeqLit(items) => items.iter().all(|x| expr_ok(x, f)),
         Expr::MapLit(es) => es.iter().all(|(_, v)| expr_ok(v, f)),
         Expr::Pair(a, b) => expr_ok(a, f) && expr_ok(b, f),
-        // Closed ranges only; open flows need compiling
+        // Only closed (eager) ranges; open-ended flows → compile path.
         Expr::Range { start, end } => {
             end.is_some() && expr_ok(start, f) && expr_ok(end.as_ref().unwrap(), f)
         }
-        // Direct calls only; callee must be name
+        // Direct calls only (callee must be a name); function-valued callees
+        // and args naming functions are caught above.
         Expr::Call { callee, args } => {
             matches!(callee.as_ref(), Expr::Ident(_)) && args.iter().all(|a| expr_ok(a, f))
         }
-        // Lambda, ClassLit, etc need compile path
+        // Lambda, ClassLit, StaticAccess, NativeBlock, CondLambda, Const,
+        // Underscore, Block-expr → compile path.
         _ => false,
     }
 }
 
-/// Run `prog` under the interpreter
+/// Run `prog` under the interpreter. Returns `Some(exit_code)` if it was fully
+/// interpreted (0 on success, 1 after a runtime error printed with its source
+/// line), or `None` if it hit an unsupported construct and the caller should
+/// fall back to compilation.
 pub fn try_run(prog: &Program) -> Option<i32> {
     let mut it = Interp::new();
     match it.run(prog) {
@@ -630,5 +673,67 @@ pub fn try_run(prog: &Program) -> Option<i32> {
             Some(1)
         }
         Err(IErr::Unsupported) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(start: i64, end: i64) -> Expr {
+        Expr::Range {
+            start: Box::new(Expr::IntLit(start)),
+            end: Some(Box::new(Expr::IntLit(end))),
+        }
+    }
+
+    fn ints(values: &[J2Value]) -> Vec<i64> {
+        values.iter().map(|v| match v {
+            J2Value::Int(n) => *n,
+            _ => panic!("expected integer range element"),
+        }).collect()
+    }
+
+    #[test]
+    fn inclusive_range_expressions_handle_integer_endpoints() {
+        let mut interpreter = Interp::new();
+        let cases = [
+            (i64::MAX, i64::MAX, vec![i64::MAX]),
+            (i64::MAX - 1, i64::MAX, vec![i64::MAX - 1, i64::MAX]),
+            (i64::MIN, i64::MIN, vec![i64::MIN]),
+            (i64::MIN + 1, i64::MIN, vec![i64::MIN + 1, i64::MIN]),
+            (3, 1, vec![3, 2, 1]),
+            (-1, 1, vec![-1, 0, 1]),
+        ];
+        for (start, end, expected) in cases {
+            let Ok(J2Value::Seq(values)) = interpreter.eval(&range(start, end)) else {
+                panic!("range should evaluate to a sequence");
+            };
+            assert_eq!(ints(&values.lock().unwrap().items), expected);
+        }
+    }
+
+    #[test]
+    fn for_ranges_match_range_expression_values() {
+        let mut interpreter = Interp::new();
+        for (start, end) in [(i64::MAX - 1, i64::MAX), (i64::MIN + 1, i64::MIN), (3, -2)] {
+            let expr = range(start, end);
+            let Ok(items) = interpreter.iter_items(&expr) else {
+                panic!("range should be iterable");
+            };
+            let Ok(J2Value::Seq(values)) = interpreter.eval(&expr) else {
+                panic!("range should evaluate to a sequence");
+            };
+            assert_eq!(ints(&items), ints(&values.lock().unwrap().items));
+        }
+    }
+
+    #[test]
+    fn loops_execute_terminal_values_once() {
+        let source = "count := 0\nlast := 0\nfor i in 9223372036854775806..9223372036854775807 {\ncount += 1\nlast = i\n}\nassert count == 2\nassert last == 9223372036854775807\ncount = 0\nfor i in 3..1 { count += 1 }\nassert count == 3\n";
+        let tokens = j2_compiler::lexer::tokenize(source).unwrap();
+        let program = j2_compiler::parser::parse(&tokens).unwrap();
+        assert!(supported(&program));
+        assert!(Interp::new().run(&program).is_ok());
     }
 }

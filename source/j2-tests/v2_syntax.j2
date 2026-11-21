@@ -1,0 +1,31 @@
+# Placeholder callbacks and trailing commas preserve the ordinary lambda behavior.
+values = [1, 2, 3, 4, 5,]
+scale = 3
+assert_eq(map(values, _ * scale,), [3, 6, 9, 12, 15,])
+assert_eq(filter(values, _ % 2 == 0,), [2, 4,])
+assert_eq(values >> (_ * _), [1, 4, 9, 16, 25,])
+assert_eq(values >> (_ + 1) >> (_ * 2), [4, 6, 8, 10, 12,])
+assert_eq(map(values, _,), values)
+assert_eq(map(values, func(x,) = x + 1,), [2, 3, 4, 5, 6,])
+
+func captured(xs, amount,) = map(xs, _ + amount,)
+assert_eq(captured(values, 10,), [11, 12, 13, 14, 15,])
+
+# Existing conditional-filter syntax continues to work.
+assert_eq(values ? (_ > 3), [4, 5,])
+assert_eq(map(values, func(x) = x * 2), values >> (_ * 2))
+
+func add(a, b,) = a + b
+assert_eq(add(2, 3,), 5)
+assert_eq({a: 1, b: 2,}.b, 2)
+assert_eq((2, 3,), (2, 3))
+
+Box = class {
+    value = 0
+    plus(amount,) = { value + amount }
+    ::twice(x,) = x * 2
+}
+box = Box(value: 7,)
+assert_eq(box.plus(2,), 9)
+assert_eq(Box::twice(4,), 8)
+print("v2 syntax: ok")

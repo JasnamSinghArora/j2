@@ -3,29 +3,47 @@
 J2 is a programming language with an interpreter and a native compiler. Native
 builds can run independent loops and function calls across multiple CPU cores.
 
-- Run a program with `j file.j2` without a build step.
+## Versions
+
+| Version | Status | Where to find it |
+|---|---|---|
+| v1 (`0.1.0`) | Published release for macOS Apple Silicon | [Downloads](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0) and the [`main` branch](https://github.com/JasnamSinghArora/j2/tree/main) |
+| v2 (`0.2.0-dev`) | Development source; no v2 installer yet | The [`v2` branch](https://github.com/JasnamSinghArora/j2/tree/v2) |
+
+The v1 downloads remain available. This branch contains v2 development work.
+See the [version guide](https://j2-lang.org/docs/versions.html) and
+[v2 development notes](source/V2_NOTES.md) for the differences.
+
+- Run a program with `j2 file.j2` without a build step.
 - Compile a native binary with `j2 build file.j2 -o out`. The compiler
   parallelizes supported patterns when it can establish that they are safe.
-- The download includes the compiler, runtime, and libraries for offline builds.
+- The v1 download includes the compiler, runtime, and libraries for offline builds.
 - The VS Code extension provides syntax highlighting, a Run command, and inline errors.
 
-```
-# montecarlo.j2: the four count_hits calls are independent and pure,
-# so `j2 build` runs them on separate cores automatically.
-func estimate(n: int) -> float = {
-    a := count_hits(1, n)
-    b := count_hits(999983, n)
-    c := count_hits(50000017, n)
-    e := count_hits(1234567891, n)
-    total := a + b + c + e
-    give (total * 4.0) / (4.0 * (n * 1.0))
-}
+## What v2 adds
+
+More numeric maps, filters, pipes, and independent indexed writes can run in
+parallel. Supported callbacks can read captured numeric arrays and use local
+bindings, branches, and eligible recursive scalar functions. Small inputs stay
+serial, and output order is preserved.
+
+The `_` callback shortcut and trailing commas reduce syntax:
+
+```j2
+values = collect(1..40000)
+scaled = map(values, _ * 3)
+evens = filter(scaled, _ % 2 == 0)
+items = [1, 2, 3,]
 ```
 
-## Install (macOS, Apple Silicon)
+Use a native build to try the parallel paths. `J2_PARALLEL=0` runs them serially.
+The [development notes](source/V2_NOTES.md) describe supported cases, fallback
+behavior, correctness fixes, and validation.
 
-Download the latest `j2-<version>-aarch64-apple-darwin.tar.gz` from
-[**Releases**](https://github.com/JasnamSinghArora/j2/releases), then:
+## Install v1 (macOS, Apple Silicon)
+
+Download `j2-0.1.0-aarch64-apple-darwin.tar.gz` from the
+[v1 release](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0), then:
 
 ```sh
 tar xzf j2-0.1.0-aarch64-apple-darwin.tar.gz
@@ -37,11 +55,29 @@ This installs J2 under `~/.j2` and puts the `j2` command on your PATH. The binar
 
 ```sh
 echo 'print("hello, world")' > hello.j2
-j hello.j2
+j2 hello.j2
 ```
 
 Native builds (`j2 build`) use the system linker. If the Xcode Command Line Tools
 are missing, install them with `xcode-select --install`.
+
+## Build v2 from source
+
+Install Rust and Cargo, then build the development driver:
+
+```sh
+git clone --branch v2 https://github.com/JasnamSinghArora/j2.git
+cd j2/source
+cargo build --release --manifest-path src/bin/j2/Cargo.toml
+./src/bin/j2/target/release/j2 --version
+./src/bin/j2/target/release/j2 build j2-examples/hello.j2 -o hello
+./hello
+```
+
+The driver reports `0.2.0-dev`. Building it does not replace an installed v1
+command. The new collection and indexed-loop helpers work with stock Rust;
+the existing MIR parallelization passes require the forked backend. See
+[source build details](source/README.md).
 
 ## Documentation
 
@@ -50,7 +86,8 @@ library, CLI commands, and automatic parallelism.
 
 ## VS Code extension
 
-Download `j2-lang-<version>.vsix` from [Releases](https://github.com/JasnamSinghArora/j2/releases) and run:
+The published extension is v1. Download `j2-lang-0.1.0.vsix` from
+[Releases](https://github.com/JasnamSinghArora/j2/releases) and run:
 
 ```sh
 code --install-extension j2-lang-0.1.0.vsix
@@ -63,9 +100,9 @@ inline errors on save.
 
 | Command | What it does |
 |---|---|
-| `j file.j2` | Run instantly (interpreter) |
+| `j2 file.j2` | Run instantly (interpreter) |
 | `j2 build file.j2 -o out` | Compile to a native, auto-parallelized binary |
-| `j2 --version` / `j --help` | Show version or help |
+| `j2 --version` / `j2 --help` | Show version or help |
 
 ## Source
 

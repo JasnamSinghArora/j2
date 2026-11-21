@@ -1,4 +1,7 @@
-// spec built-ins, exact semantics including error cases
+// J built-in functions (spec §built-in functions).
+//
+// Each function here implements one bullet from the spec, with exactly
+// the semantics described, including the documented error cases.
 
 use std::io::{self, Write, BufRead};
 
@@ -6,9 +9,12 @@ use crate::error::{J2Err, J2Result};
 use crate::flow::J2Flow;
 use crate::value::J2Value;
 
-/// Convert an `f64` to `i64`, erroring
+/// Convert an `f64` to `i64`, erroring (instead of silently saturating to
+/// `i64::MIN`/`i64::MAX`) when the value is non-finite or outside the exact
+/// `i64` range. `[-2^63, 2^63)` is the interval where `x as i64` is exact;
+/// anything else would corrupt the result. Shared by ceil/floor/round/trunc.
 pub fn f64_to_i64(x: f64, who: &str) -> J2Result<i64> {
-    // -2^63 and 2^63 exactly representable as f64
+    // -2^63 and 2^63 are both exactly representable as f64.
     if x.is_finite() && x >= -9_223_372_036_854_775_808.0 && x < 9_223_372_036_854_775_808.0 {
         Ok(x as i64)
     } else {
@@ -19,7 +25,7 @@ pub fn f64_to_i64(x: f64, who: &str) -> J2Result<i64> {
     }
 }
 
-// A
+// ───────────────────────── A ─────────────────────────
 
 /// abs(x): absolute value of a number.
 pub fn abs(args: &[J2Value]) -> J2Result<J2Value> {
@@ -31,7 +37,7 @@ pub fn abs(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// C
+// ───────────────────────── C ─────────────────────────
 
 pub fn ceil(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "ceil")?;
@@ -39,7 +45,11 @@ pub fn ceil(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Int(f64_to_i64(x.ceil(), "ceil")?))
 }
 
-/// collect(flow[, pred]), drain until pred true (inclusive)
+/// collect(flow): the spec mandates an `until` clause for any flow that
+/// could be infinite. Here we accept either:
+///   - collect(flow)           with a finite flow → drain
+///   - collect(flow, pred)     drain until pred(v) becomes true (inclusive)
+/// The transpiler maps `collect(f) until cond` to `collect(f, pred)`.
 pub fn collect(args: &[J2Value]) -> J2Result<J2Value> {
     if args.is_empty() || args.len() > 2 {
         return Err(J2Err::type_err("collect requires 1 or 2 arguments"));
@@ -54,7 +64,7 @@ pub fn collect(args: &[J2Value]) -> J2Result<J2Value> {
                         "collect requires an until condition on an infinite flow",
                     ));
                 }
-                let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::range(0, -1));
+                let flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::empty());
                 let items = flow.collect_all()?;
                 Ok(J2Value::seq(items))
             } else {
@@ -62,7 +72,7 @@ pub fn collect(args: &[J2Value]) -> J2Result<J2Value> {
                     J2Value::Cond(p) => p.clone(),
                     _ => return Err(J2Err::type_err("collect: second argument must be a cond")),
                 };
-                let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::range(0, -1));
+                let flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::empty());
                 let items = flow.collect_until(|v| pred(v))?;
                 Ok(J2Value::seq(items))
             }
@@ -99,7 +109,7 @@ pub fn count(args: &[J2Value]) -> J2Result<J2Value> {
             if f.lock().unwrap_or_else(|p| p.into_inner()).is_infinite() {
                 return Err(J2Err::infinite_flow("count cannot be applied to an infinite flow"));
             }
-            let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::range(0, -1));
+            let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::empty());
             let mut n = 0i64;
             while flow.next()?.is_some() { n += 1; }
             Ok(J2Value::Int(n))
@@ -108,7 +118,7 @@ pub fn count(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// F
+// ───────────────────────── F ─────────────────────────
 
 pub fn floor(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "floor")?;
@@ -145,7 +155,7 @@ pub fn fmt(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(out))
 }
 
-// I
+// ───────────────────────── I ─────────────────────────
 
 pub fn input(args: &[J2Value]) -> J2Result<J2Value> {
     if !args.is_empty() {
@@ -160,7 +170,7 @@ pub fn input(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(s))
 }
 
-// J
+// ───────────────────────── J ─────────────────────────
 
 pub fn join(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "join")?;
@@ -180,7 +190,7 @@ pub fn join(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-// L
+// ───────────────────────── L ─────────────────────────
 
 pub fn len(args: &[J2Value]) -> J2Result<J2Value> { count(args) }
 
@@ -189,10 +199,11 @@ pub fn lower(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::text(args[0].as_text()?.to_lowercase()))
 }
 
-// M
+// ───────────────────────── M ─────────────────────────
 
 pub fn max(args: &[J2Value]) -> J2Result<J2Value> {
-    // Binary form `max(a, b)`
+    // Binary form `max(a, b)` - mirrors the native `a.max(b)` lowering
+    // (int-preserving when both are ints, else f64::max).
     if args.len() == 2 {
         return Ok(binary_max_min(&args[0], &args[1], true)?);
     }
@@ -209,7 +220,7 @@ pub fn max(args: &[J2Value]) -> J2Result<J2Value> {
 }
 
 pub fn min(args: &[J2Value]) -> J2Result<J2Value> {
-    // Binary form `min(a, b)`
+    // Binary form `min(a, b)` - mirrors the native `a.min(b)` lowering.
     if args.len() == 2 {
         return Ok(binary_max_min(&args[0], &args[1], false)?);
     }
@@ -223,7 +234,9 @@ pub fn min(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(best)
 }
 
-/// Binary max/min, i64 for ints, else f64
+/// Binary max/min of two scalars, matching the native lowering: exact i64
+/// when both are ints, otherwise f64 (same NaN behavior as backend's
+/// `f64::max`/`min`). `want_max` selects max vs min.
 fn binary_max_min(a: &J2Value, b: &J2Value, want_max: bool) -> J2Result<J2Value> {
     if let (J2Value::Int(x), J2Value::Int(y)) = (a, b) {
         return Ok(J2Value::Int(if want_max { *x.max(y) } else { *x.min(y) }));
@@ -233,7 +246,9 @@ fn binary_max_min(a: &J2Value, b: &J2Value, want_max: bool) -> J2Result<J2Value>
     Ok(J2Value::Float(if want_max { x.max(y) } else { x.min(y) }))
 }
 
-/// clamp via max-then-min; inverted range never panics
+/// clamp(x, lo, hi): mirrors the native `x.clamp(lo, hi)` lowering for valid
+/// bounds (lo ≤ hi), int-preserving when all three are ints. Implemented as
+/// max-then-min so an inverted range never panics.
 pub fn clamp(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 3, "clamp")?;
     if let (J2Value::Int(x), J2Value::Int(lo), J2Value::Int(hi)) = (&args[0], &args[1], &args[2]) {
@@ -245,7 +260,7 @@ pub fn clamp(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Float(x.max(lo).min(hi)))
 }
 
-// N
+// ───────────────────────── N ─────────────────────────
 
 pub fn num(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "num")?;
@@ -256,7 +271,7 @@ pub fn num(args: &[J2Value]) -> J2Result<J2Value> {
     Err(J2Err::conversion(format!("{:?} cannot be converted to a number", s)))
 }
 
-// P
+// ───────────────────────── P ─────────────────────────
 
 pub fn pow(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "pow")?;
@@ -272,9 +287,10 @@ pub fn print(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Null)
 }
 
-// R
+// ───────────────────────── R ─────────────────────────
 
-/// In-place append, avoids O(N) `s += [x]`
+/// `push(s, x)`: in-place append on a mutable seq. Returns null.
+/// Faster alternative to `s += [x]` (which is O(N) per append).
 pub fn push(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "push")?;
     match &args[0] {
@@ -282,7 +298,8 @@ pub fn push(args: &[J2Value]) -> J2Result<J2Value> {
             s.lock().unwrap_or_else(|p| p.into_inner()).items.push(args[1].clone());
             Ok(J2Value::Null)
         }
-        // packed seq, append as f64, keep representation
+        // Packed float seq: append the value coerced to f64 (preserving the
+        // in-place reference semantics and the packed representation).
         J2Value::SeqF64(s) => {
             s.lock().unwrap_or_else(|p| p.into_inner()).push(args[1].as_num_f64()?);
             Ok(J2Value::Null)
@@ -291,12 +308,16 @@ pub fn push(args: &[J2Value]) -> J2Result<J2Value> {
     }
 }
 
-/// `make_seq(n, init)`, n copies of init, preallocated
+/// `make_seq(n, init)`: build a fresh seq of length n where every
+/// element is `init`. Constant-time per element via Vec::with_capacity.
 pub fn make_seq(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "make_seq")?;
     let n = args[0].as_num_i64()?;
     if n < 0 { return Err(J2Err::value("make_seq: length must be non-negative")); }
-    // Float init -> packed float seq
+    // Float init → packed float seq (the native-boundary fast path): native
+    // kernels then unbox/rebox via memcpy/move instead of per-element boxing.
+    // Observably identical to a boxed seq of equal `Float`s (Display, ==,
+    // indexing, builtins all treat the two forms the same).
     if let J2Value::Float(x) = args[1] {
         return Ok(J2Value::seq_f64(vec![x; n as usize]));
     }
@@ -319,7 +340,7 @@ pub fn reverse(args: &[J2Value]) -> J2Result<J2Value> {
             if f.lock().unwrap_or_else(|p| p.into_inner()).is_infinite() {
                 return Err(J2Err::infinite_flow("reverse: infinite flow"));
             }
-            let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::range(0, -1));
+            let flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::empty());
             let mut items = flow.collect_all()?;
             items.reverse();
             Ok(J2Value::seq(items))
@@ -332,7 +353,7 @@ pub fn reverse(args: &[J2Value]) -> J2Result<J2Value> {
 pub fn round(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "round")?;
     let x = args[0].as_num_f64()?;
-    // banker's rounding (half to even) per spec
+    // Banker's rounding (round half to even) per spec.
     let r = if (x - x.floor()).abs() == 0.5 {
         let lo = f64_to_i64(x.floor(), "round")?;
         if lo % 2 == 0 { lo } else { lo + 1 }
@@ -342,11 +363,12 @@ pub fn round(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Int(r))
 }
 
-// S
+// ───────────────────────── S ─────────────────────────
 
 pub fn slice(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 3, "slice")?;
-    // Clamp negative indices to 0
+    // Clamp negative indices to 0 (consistent with take/skip), rather than
+    // casting a negative i64 straight to a huge usize.
     let i = args[1].as_num_i64()?.max(0) as usize;
     let j = args[2].as_num_i64()?.max(0) as usize;
     if i > j { return Err(J2Err::value("slice: start index greater than end index")); }
@@ -428,25 +450,26 @@ pub fn sum(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "sum")?;
     let items = collect_finite_items(&args[0], "sum")?;
     if items.is_empty() { return Err(J2Err::value("sum requires a non-empty seq")); }
-    // parallel if numeric and len >= threshold
+    // Parallelism hook: if all items are numeric and len >= threshold, dispatch to
+    // parallel_runtime; else do serial fold.
     crate::parallel::sum_seq(&items)
 }
 
-// T
+// ───────────────────────── T ─────────────────────────
 
 pub fn trim(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "trim")?;
     Ok(J2Value::text(args[0].as_text()?.trim().to_string()))
 }
 
-// U
+// ───────────────────────── U ─────────────────────────
 
 pub fn upper(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "upper")?;
     Ok(J2Value::text(args[0].as_text()?.to_uppercase()))
 }
 
-// helpers
+// ───────────────────────── helpers ─────────────────────────
 
 fn arity(args: &[J2Value], expected: usize, name: &str) -> J2Result<()> {
     if args.len() != expected {
@@ -458,7 +481,7 @@ fn arity(args: &[J2Value], expected: usize, name: &str) -> J2Result<()> {
     Ok(())
 }
 
-/// Materialize a finite seq/flow into Vec<J2Value>
+/// Materialize a finite seq/flow into Vec<J2Value>. Errors on infinite flow.
 pub(crate) fn collect_finite_items(v: &J2Value, who: &str) -> J2Result<Vec<J2Value>> {
     match v {
         J2Value::Seq(s) => Ok(s.lock().unwrap_or_else(|p| p.into_inner()).items.clone()),
@@ -467,16 +490,17 @@ pub(crate) fn collect_finite_items(v: &J2Value, who: &str) -> J2Result<Vec<J2Val
             if f.lock().unwrap_or_else(|p| p.into_inner()).is_infinite() {
                 return Err(J2Err::infinite_flow(format!("{} cannot be applied to an infinite flow", who)));
             }
-            let mut flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::range(0, -1));
+            let flow = std::mem::replace(&mut *f.lock().unwrap_or_else(|p| p.into_inner()), J2Flow::empty());
             flow.collect_all()
         }
         _ => Err(J2Err::type_err(format!("{}: expected a seq or flow, got {}", who, v.type_name()))),
     }
 }
 
-// extended (post-spec)
+// ───────────────────────── extended (post-spec) ─────────────────────────
 
-/// type(x), runtime type name as text
+/// type(x) → text: runtime type name. Returns one of:
+/// "val", "seq", "flow", "cond", "pair", "map", "func", "null".
 pub fn type_of(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "type")?;
     Ok(J2Value::text(args[0].type_name().to_string()))
@@ -504,7 +528,7 @@ fn call_value(callee: &J2Value, args: Vec<J2Value>) -> J2Result<J2Value> {
     }
 }
 
-/// reduce(seq, init, fn), left fold fn(acc, x)
+/// reduce(seq, init, fn): left fold with fn(acc, x).
 pub fn reduce(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 3, "reduce")?;
     let items = collect_finite_items(&args[0], "reduce")?;
@@ -515,7 +539,7 @@ pub fn reduce(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(acc)
 }
 
-/// map(seq, fn), new seq of fn(x)
+/// map(seq, fn): apply fn to each element, return new seq.
 pub fn map_fn(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "map")?;
     let items = collect_finite_items(&args[0], "map")?;
@@ -526,7 +550,7 @@ pub fn map_fn(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(out))
 }
 
-/// filter(seq, pred), keep elements where pred truthy
+/// filter(seq, pred): keep elements for which pred(x) is truthy.
 pub fn filter_fn(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "filter")?;
     let items = collect_finite_items(&args[0], "filter")?;
@@ -537,7 +561,7 @@ pub fn filter_fn(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(out))
 }
 
-/// take(seq, n) - first n elements
+/// take(seq, n): first n elements.
 pub fn take(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "take")?;
     let n = args[1].as_num_i64()?.max(0) as usize;
@@ -545,7 +569,7 @@ pub fn take(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(items.into_iter().take(n).collect()))
 }
 
-/// skip(seq, n) - drop first n elements
+/// skip(seq, n): drop first n elements.
 pub fn skip(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "skip")?;
     let n = args[1].as_num_i64()?.max(0) as usize;
@@ -553,7 +577,7 @@ pub fn skip(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(items.into_iter().skip(n).collect()))
 }
 
-/// zip(a, b) - seq of pairs
+/// zip(a, b): seq of pairs.
 pub fn zip(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "zip")?;
     let a = collect_finite_items(&args[0], "zip")?;
@@ -565,7 +589,7 @@ pub fn zip(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(out))
 }
 
-/// enumerate(seq) - seq of (index, value) pairs
+/// enumerate(seq): seq of (index, value) pairs.
 pub fn enumerate(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "enumerate")?;
     let items = collect_finite_items(&args[0], "enumerate")?;
@@ -576,7 +600,7 @@ pub fn enumerate(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(out))
 }
 
-/// unique(seq), distinct elements, first occurrence order
+/// unique(seq): return distinct elements preserving first occurrence.
 pub fn unique(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "unique")?;
     let items = collect_finite_items(&args[0], "unique")?;
@@ -587,7 +611,7 @@ pub fn unique(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(seen))
 }
 
-/// flatten(seq_of_seq) - concatenate sub-seqs into one
+/// flatten(seq_of_seq): concatenate sub-seqs into one.
 pub fn flatten(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 1, "flatten")?;
     let items = collect_finite_items(&args[0], "flatten")?;
@@ -602,12 +626,12 @@ pub fn flatten(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(out))
 }
 
-/// sort_by(seq, cmp), cmp(a, b) returns int
+/// sort_by(seq, cmp): sort with custom comparator cmp(a, b) returning int.
 pub fn sort_by(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "sort_by")?;
     let mut items = collect_finite_items(&args[0], "sort_by")?;
     let cmp = args[1].clone();
-    // bubble sort, error bail, keeps closures simple
+    // Bubble sort with bail on error - keeps closures simple, fine for J's scale.
     let n = items.len();
     let mut err: Option<J2Err> = None;
     for i in 0..n {
@@ -626,7 +650,7 @@ pub fn sort_by(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::seq(items))
 }
 
-/// assert_eq(a, b), error unless equal, returns null
+/// assert_eq(a, b): error unless a == b. Returns null.
 pub fn assert_eq(args: &[J2Value]) -> J2Result<J2Value> {
     arity(args, 2, "assert_eq")?;
     if !args[0].eq(&args[1]) {
@@ -635,7 +659,8 @@ pub fn assert_eq(args: &[J2Value]) -> J2Result<J2Value> {
     Ok(J2Value::Null)
 }
 
-/// Global namespace seeded with every built-in
+/// Build the global namespace seeded with every built-in.  Used by the
+/// transpiled output to set up the initial environment.
 pub fn install(env: &mut std::collections::HashMap<String, J2Value>) {
     macro_rules! ins {
         ($n:ident, $f:path) => {
@@ -686,7 +711,11 @@ pub fn install(env: &mut std::collections::HashMap<String, J2Value>) {
     env.insert("sort_by".into(), J2Value::Builtin(std::sync::Arc::new(sort_by), "sort_by"));
     env.insert("assert_eq".into(), J2Value::Builtin(std::sync::Arc::new(assert_eq), "assert_eq"));
 
-    // Bare transcendental / log math functions
+    // Bare transcendental / log math functions. The native lowering recognizes
+    // bare sqrt/abs/floor/ceil/round/exp/ln/sin/cos/tan; registering the bare
+    // forms here keeps the dynamic interpreter in lock-step (no NameError where
+    // native compiles) and lets these be called without the `math.` prefix.
+    // Implementations are shared with the `math` module.
     macro_rules! insm {
         ($n:expr, $f:path) => {
             env.insert($n.to_string(), J2Value::Builtin(std::sync::Arc::new($f), $n));
@@ -707,4 +736,75 @@ pub fn install(env: &mut std::collections::HashMap<String, J2Value>) {
     insm!("sinh", crate::modules::math::sinh);
     insm!("cosh", crate::modules::math::cosh);
     insm!("tanh", crate::modules::math::tanh);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    fn ints(value: J2Value) -> Vec<i64> {
+        let J2Value::Seq(seq) = value else { panic!("expected sequence") };
+        let result = seq.lock().unwrap().items.iter().map(|v| match v {
+            J2Value::Int(n) => *n,
+            _ => panic!("expected integer element"),
+        }).collect();
+        result
+    }
+
+    fn counted(value: &J2Value) -> i64 {
+        let J2Value::Int(n) = count(&[value.clone()]).unwrap() else { panic!("expected count") };
+        n
+    }
+
+    #[test]
+    fn collecting_a_flow_exhausts_all_aliases() {
+        let flow = J2Value::flow(J2Flow::range(1, 3));
+        let alias = flow.clone();
+        assert_eq!(ints(collect(&[flow.clone()]).unwrap()), vec![1, 2, 3]);
+        assert!(ints(collect(&[alias.clone()]).unwrap()).is_empty());
+        assert!(ints(collect(&[flow.clone()]).unwrap()).is_empty());
+        assert_eq!(counted(&alias), 0);
+    }
+
+    #[test]
+    fn counting_and_reversing_do_not_create_phantom_range_values() {
+        let flow = J2Value::flow(J2Flow::range(3, 1));
+        assert_eq!(counted(&flow), 3);
+        assert_eq!(counted(&flow), 0);
+        assert!(ints(collect(&[flow]).unwrap()).is_empty());
+
+        let flow = J2Value::flow(J2Flow::range(1, 3));
+        assert_eq!(ints(reverse(&[flow.clone()]).unwrap()), vec![3, 2, 1]);
+        assert!(ints(reverse(&[flow.clone()]).unwrap()).is_empty());
+        assert_eq!(counted(&flow), 0);
+    }
+
+    #[test]
+    fn repeated_map_on_a_consumed_flow_does_no_more_work() {
+        let flow = J2Value::flow(J2Flow::range(1, 3));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        let callback = J2Value::Builtin(Arc::new(move |args| {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(args[0].clone())
+        }), "identity");
+        assert_eq!(ints(map_fn(&[flow.clone(), callback.clone()]).unwrap()), vec![1, 2, 3]);
+        assert!(ints(map_fn(&[flow.clone(), callback]).unwrap()).is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(counted(&flow), 0);
+    }
+
+    #[test]
+    fn bounded_collect_and_failed_collect_leave_an_empty_flow() {
+        let flow = J2Value::flow(J2Flow::open_range(1));
+        let predicate = J2Value::Cond(Arc::new(|v| Ok(v.as_num_i64()? >= 3)));
+        assert_eq!(ints(collect(&[flow.clone(), predicate]).unwrap()), vec![1, 2, 3]);
+        assert!(ints(collect(&[flow]).unwrap()).is_empty());
+
+        let items = vec![Ok(J2Value::Int(1)), Err(J2Err::runtime("test failure"))];
+        let flow = J2Value::flow(J2Flow::Iter(Box::new(items.into_iter())));
+        assert!(collect(&[flow.clone()]).is_err());
+        assert_eq!(counted(&flow), 0);
+    }
 }
