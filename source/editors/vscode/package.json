@@ -2,8 +2,9 @@
   "name": "j2-lang",
   "displayName": "J2 Language",
   "description": "J2 language support: syntax highlighting, run, and inline errors.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "j2-lang",
+  "repository": { "type": "git", "url": "https://github.com/JasnamSinghArora/j2.git", "directory": "source/editors/vscode" },
   "license": "MIT",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages"],
@@ -45,7 +46,7 @@
         "j2.path": {
           "type": "string",
           "default": "j2",
-          "description": "Path to the `j` executable (on PATH by default)."
+          "description": "Path to the `j2` executable (on PATH by default)."
         },
         "j2.checkOnSave": {
           "type": "boolean",

@@ -7,10 +7,16 @@ TRIPLE="aarch64-apple-darwin"
 STAGE1="$ROOT/build/$TRIPLE/stage1"
 CARGO="$ROOT/build/$TRIPLE/stage0/bin/cargo"
 DRIVER="$ROOT/src/bin/j2/target/release/j2"
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/src/bin/j2/Cargo.toml" | head -n 1)"
 
 for p in "$STAGE1/bin/rustc" "$CARGO" "$DRIVER" "$ROOT/j2-vendor" "$ROOT/library/j2_runtime/src"; do
   [ -e "$p" ] || { echo "missing: $p" >&2; exit 1; }
 done
+
+[ "$("$DRIVER" --version)" = "j2 $VERSION" ] || {
+  echo "error: rebuild the release driver for version $VERSION before packaging" >&2
+  exit 1
+}
 
 echo "Assembling J2 bundle -> $OUT"
 rm -rf "$OUT"; mkdir -p "$OUT/bin" "$OUT/library/j2_runtime"
@@ -28,4 +34,7 @@ echo "[5/7] vendored deps";     cp -R "$ROOT/j2-vendor" "$OUT/j2-vendor"
 echo "[6/7] j2_runtime source";  cp -R "$ROOT/library/j2_runtime/src" "$ROOT/library/j2_runtime/Cargo.toml" "$ROOT/library/j2_runtime/Cargo.lock" "$OUT/library/j2_runtime/"
 # J2 uses MIT; the backend and dependencies keep their own licenses.
 echo "[7/7] licenses";          cp "$ROOT/deploy/LICENSE-MIT" "$ROOT/LICENSE-APACHE" "$ROOT/deploy/THIRD-PARTY-NOTICES.md" "$OUT/"
+cp "$ROOT/deploy/install.sh" "$OUT/install.sh"
+chmod +x "$OUT/install.sh"
+printf '%s\n' "$VERSION" > "$OUT/VERSION"
 echo "DONE: $OUT ($(du -sh "$OUT" | cut -f1))"

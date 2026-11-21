@@ -1,13 +1,12 @@
 # J2 compiler source
 
-This is the v2 development source (`0.2.0-dev`) on the `v2` branch.
-The published v1 release is `0.1.0`; its source remains on `main` and its
-[downloads](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0) remain
-available. There is no v2 installer yet.
+This is the J2 v2 (`0.2.0`) source from the `main` branch.
+[Download v2](https://j2-lang.org/download.html) for a ready-to-use installer or
+archive, including the compiler and runtime.
 
-Read the [v2 development notes](V2_NOTES.md) for features, limitations, and
+Read the [v2 release notes](V2_NOTES.md) for features, limitations, and
 completed validation, or the [version guide](https://j2-lang.org/docs/versions.html)
-for a comparison with v1.
+for a comparison with the previous v1 release.
 
 ## Build the driver
 
@@ -21,9 +20,8 @@ cargo build --release --manifest-path src/bin/j2/Cargo.toml
 ./hello
 ```
 
-The driver reports `0.2.0-dev`. These commands build and use a local executable;
-they do not replace an installed v1 command. Cargo downloads dependencies on
-the first build unless they are already cached.
+The driver reports `0.2.0`. These commands build and use a local executable.
+Cargo downloads dependencies on the first build unless they are already cached.
 
 The new collection and indexed-loop parallel helpers work with stock Rust.
 The existing MIR parallelization passes require the J2 fork of the backend
@@ -49,7 +47,7 @@ cargo test --manifest-path src/bin/j2/Cargo.toml
 ```
 
 The differential tests use the release driver built above. More checks and
-the results from the development workspace are recorded in [V2_NOTES.md](V2_NOTES.md).
+the results from validation are recorded in [V2_NOTES.md](V2_NOTES.md).
 
 ## Layout
 

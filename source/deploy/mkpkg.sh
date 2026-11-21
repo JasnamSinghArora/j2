@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# macOS .pkg from bundle; unsigned, see sign.sh
+# Build a macOS installer from a J2 bundle.
+# Usage: deploy/mkpkg.sh <bundle-dir> [version] [out.pkg]
+# The package installs to /usr/local/j2 and links j2 onto PATH.
+# Sign the result with productsign, then notarize and staple it before release.
 set -euo pipefail
 
 BUNDLE="${1:?usage: mkpkg.sh <bundle-dir> [version] [out.pkg]}"
-VERSION="${2:-0.1.0}"
-OUT="${3:-j-$VERSION.pkg}"
+[ -x "$BUNDLE/bin/j2" ] || { echo "error: '$BUNDLE' is not a J2 bundle (no bin/j2)" >&2; exit 1; }
+BUNDLE_VERSION="$("$BUNDLE/bin/j2" --version | sed 's/^j2 //')"
+VERSION="${2:-$BUNDLE_VERSION}"
+[ "$VERSION" = "$BUNDLE_VERSION" ] || {
+  echo "error: package version $VERSION does not match bundled driver $BUNDLE_VERSION" >&2
+  exit 1
+}
+OUT="${3:-j2-$VERSION.pkg}"
 IDENTIFIER="${J2_PKG_ID:-org.j2lang.j2}"
 INSTALL_LOCATION="${J2_PKG_LOCATION:-/usr/local/j2}"
 
-[ -x "$BUNDLE/bin/j2" ] || { echo "error: '$BUNDLE' is not a J2 bundle (no bin/j2)" >&2; exit 1; }
 command -v pkgbuild >/dev/null || { echo "error: pkgbuild not found (Xcode command line tools)" >&2; exit 1; }
 
 echo "Packaging J2 $VERSION from $BUNDLE -> $OUT"
@@ -18,15 +26,15 @@ trap 'rm -rf "$SCRATCH"' EXIT
 SCRIPTS="$SCRATCH/scripts"
 mkdir -p "$SCRIPTS"
 
-# postinstall links j, warms cache ($2 location)
+# Installer passes the target volume as $3.
 cat > "$SCRIPTS/postinstall" <<POST
 #!/bin/bash
 set -e
-PREFIX="\${2%/}/${INSTALL_LOCATION#/}"
-# absolute install-location puts payload there directly
-[ -x "\$PREFIX/bin/j2" ] || PREFIX="${INSTALL_LOCATION}"
-mkdir -p /usr/local/bin
-ln -sf "\$PREFIX/bin/j2" /usr/local/bin/j2 || true
+VOLUME="\${3:-/}"
+PREFIX="\${VOLUME%/}/${INSTALL_LOCATION#/}"
+BINDIR="\${VOLUME%/}/usr/local/bin"
+mkdir -p "\$BINDIR"
+ln -sf "${INSTALL_LOCATION}/bin/j2" "\$BINDIR/j2"
 TMP="\$(mktemp -d)"; printf 'print("ok")\n' > "\$TMP/warm.j2"
 "\$PREFIX/bin/j2" build "\$TMP/warm.j2" -o "\$TMP/warm.out" >/dev/null 2>&1 || true
 rm -rf "\$TMP"
@@ -45,4 +53,4 @@ pkgbuild \
 echo
 echo "Built $OUT ($(du -h "$OUT" | cut -f1))."
 echo "  local install:  sudo installer -pkg $OUT -target /"
-echo "  distribute:     sign + notarize first (deploy/sign.sh)."
+echo "  distribute:     productsign, notarize with notarytool, then staple the installer."

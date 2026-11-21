@@ -1,24 +1,16 @@
 #!/usr/bin/env bash
-# sign/notarize bundle for Gatekeeper; needs Developer ID
+# Sign a macOS J2 bundle, then notarize its ZIP if NOTARY_PROFILE is set.
+# DEVELOPER_ID must name a Developer ID Application identity in Keychain.
+# Usage: deploy/sign.sh <bundle-dir>
 set -euo pipefail
 BUNDLE="${1:?usage: sign.sh <bundle-dir>}"
 : "${DEVELOPER_ID:?set DEVELOPER_ID to your 'Developer ID Application' identity}"
-
-echo "Signing every Mach-O in $BUNDLE (hardened runtime, timestamped)..."
-# Sign dylibs + executables individually first
-find "$BUNDLE" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 |
-  while IFS= read -r -d '' f; do
-    codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$f"
-  done
-find "$BUNDLE" -type f -perm +111 ! -name '*.dylib' -print0 |
-  while IFS= read -r -d '' f; do
-    codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$f" 2>/dev/null || true
-  done
-codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$BUNDLE/bin/j2"
-codesign --verify --deep --strict "$BUNDLE/bin/j2" && echo "signature verified"
-
-# library-validation exemption so user-built proc-macro dylibs load
-ENT="$(mktemp -t rustc-entitlements).plist"
+[ -x "$BUNDLE/bin/j2" ] || { echo "error: no J2 driver in $BUNDLE" >&2; exit 1; }
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+ENT="$SCRATCH/rustc-entitlements.plist"
+# rustc loads proc macros built on the user's machine with ad-hoc signatures.
+# Without this entitlement, hardened runtime prevents those native builds.
 cat > "$ENT" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,21 +21,32 @@ cat > "$ENT" <<'PLIST'
 </dict>
 </plist>
 PLIST
-if [ -x "$BUNDLE/toolchain/bin/rustc" ]; then
-  codesign --force --options runtime --timestamp --entitlements "$ENT" \
-    --sign "$DEVELOPER_ID" "$BUNDLE/toolchain/bin/rustc"
-  echo "compiler re-signed with library-validation exemption"
-fi
-rm -f "$ENT"
+
+echo "Signing Mach-O libraries and executables in $BUNDLE"
+find "$BUNDLE" -type f \( -name '*.dylib' -o -name '*.so' -o -perm +111 \) -print0 |
+  while IFS= read -r -d '' f; do
+    # Shell scripts and source files are not Mach-O code and need no signature.
+    if ! file -b "$f" | grep -q 'Mach-O'; then
+      continue
+    fi
+    if [ "$f" = "$BUNDLE/toolchain/bin/rustc" ]; then
+      codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$DEVELOPER_ID" "$f"
+    else
+      codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$f"
+    fi
+    codesign --verify --strict "$f"
+  done
+codesign --verify --deep --strict "$BUNDLE/bin/j2"
 
 if [ -n "${NOTARY_PROFILE:-}" ]; then
-  echo "Notarizing..."
   ZIP="$BUNDLE.zip"
   ditto -c -k --keepParent "$BUNDLE" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-  # Stapling a directory bundle isn't supported
-  echo "Notarized $ZIP. (For a stapled artifact, wrap in a .pkg/.dmg and staple that.)"
+  echo "Submitting $ZIP for notarization"
+  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$SCRATCH/notary.json"
+  cat "$SCRATCH/notary.json"
+  STATUS="$(plutil -extract status raw -o - "$SCRATCH/notary.json")"
+  [ "$STATUS" = "Accepted" ] || { echo "error: notarization status is $STATUS" >&2; exit 1; }
+  echo "Notarized $ZIP. For a stapled download, sign and notarize a .pkg installer."
 else
-  echo "Set NOTARY_PROFILE to also notarize. Without notarization, Gatekeeper"
-  echo "will warn on first launch of downloaded binaries."
+  echo "Bundle signed. Set NOTARY_PROFILE to also notarize its ZIP."
 fi

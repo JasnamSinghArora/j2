@@ -1,65 +1,89 @@
 # Distributing J2 on macOS
 
-J2 ships as one self-contained bundle. The `j2` binary finds its toolchain,
-vendored crates, and runtime relative to itself, so the bundle can live anywhere
-and needs no system toolchain, cargo, or network.
+J2 v2 is version `0.2.0`. The default downloads come from the
+[latest release](https://github.com/JasnamSinghArora/j2/releases/latest).
+Previous releases remain available in the release history.
+
+J2 ships as a self-contained bundle. The `j2` binary finds its toolchain,
+vendored crates, and runtime relative to itself, so native builds work without
+a separately installed compiler or a network connection.
 
 ## Bundle layout
 
-```
+```text
 <bundle>/
-  bin/j2                 driver (interpreter first, native via `j2 build`)
-  toolchain/bin/         pruned compiler and cargo
-  toolchain/lib/         std sysroot
-  j2-vendor/             183 vendored crates for offline builds
+  bin/j2                 driver and interpreter
+  toolchain/bin/         compiler and cargo
+  toolchain/lib/         standard library and compiler libraries
+  j2-vendor/             dependencies for offline builds
   library/j2_runtime/    runtime source
   install.sh
   VERSION
 ```
 
-About 670 MB unpacked: toolchain 400 MB, vendor 265 MB.
-
 ## Release flow
 
-1. Build: `x.py build --stage 1`, then `(cd src/bin/j2 && cargo build --release)`.
-   `j2-vendor/` must exist; re-vendor from `program.lock` if deps changed.
-2. Package: `deploy/mkrelease.sh [version]` writes
-   `dist/j2-<ver>-aarch64-apple-darwin.tar.gz` and prints its sha256.
-3. Sign and notarize: `deploy/sign.sh <bundle>`. Then re-tar by hand, since
-   `mkrelease.sh` rebuilds the bundle and the step 2 tarball holds unsigned bytes:
-   `(cd dist && tar -czf j2-<ver>-aarch64-apple-darwin.tar.gz j2-<ver>-aarch64-apple-darwin)`.
-4. Publish: upload the tarball and fill `url`, `sha256`, and `version` in
-   `deploy/Formula/j2.rb`.
+Use the full [compiler checkout](https://github.com/JasnamSinghArora/ProgrammingLanguage-Common)
+to build a release. The public source export contains the J2 frontend, driver,
+and runtime, but does not duplicate the compiler backend build tree.
+
+1. Build the backend with `./x.py build --stage 1`, then build the driver:
+   `cargo build --release --manifest-path src/bin/j2/Cargo.toml --offline`.
+   Make sure `j2-vendor/` contains the dependencies in `program.lock`.
+2. Set `DEVELOPER_ID` to the Developer ID Application identity and
+   `NOTARY_PROFILE` to the existing notarytool Keychain profile. Run
+   `deploy/mkrelease.sh`. It reads the version from the driver manifest, checks
+   the built driver, signs the bundle, notarizes the ZIP, and creates the
+   tarball from the signed bundle.
+3. Build an installer with
+   `deploy/mkpkg.sh dist/j2-0.2.0-aarch64-apple-darwin 0.2.0 dist/j2-0.2.0-unsigned.pkg`.
+   Use `productsign --sign "$INSTALLER_ID"` to write the final
+   `dist/j2-0.2.0.pkg`, where `INSTALLER_ID` is a Developer ID Installer identity.
+   Submit that file using `xcrun notarytool submit` with the Keychain profile
+   and `--wait`, then run `xcrun stapler staple dist/j2-0.2.0.pkg` after acceptance.
+4. Package the VS Code extension at the same version. Test the extracted
+   archive with both the interpreter and native execution, verify signatures,
+   and calculate SHA-256 checksums after all signing and stapling is complete.
+5. Publish the tag and release assets. Update the website and Homebrew formula
+   with the final archive version and checksum, and mark the release as latest.
+
+Do not rerun `mkbundle.sh` over a signed bundle: it replaces the directory.
+`mkrelease.sh` signs before archiving, so its archives contain the final code
+signatures. Without `DEVELOPER_ID`, it produces unsigned archives for local use.
 
 ## Artifacts
 
-- `j2-<ver>-aarch64-apple-darwin.tar.gz`, the bundle plus `install.sh`.
-- `j2-<ver>-aarch64-apple-darwin.zip`, the same bytes as notarized.
-- `j2-<ver>.pkg`, installs to `/usr/local/j2`. The payload is signed and
-  notarized; the container needs a Developer ID Installer certificate.
-- `j2-lang-<ver>.vsix`, the VS Code extension.
+- `j2-0.2.0-aarch64-apple-darwin.tar.gz`: the bundle and installer script.
+- `j2-0.2.0-aarch64-apple-darwin.zip`: the notarized bundle.
+- `j2-0.2.0.pkg`: the signed, notarized installer with a stapled ticket.
+- `j2-lang-0.2.0.vsix`: the VS Code extension.
+- `SHA256SUMS`: checksums of the published files.
 
 ## Install
 
-- Tarball: `tar xzf j2-<ver>-aarch64-apple-darwin.tar.gz`, `cd` into it, run
-  `./install.sh`. Installs to `~/.j2` and links `j2` into `/usr/local/bin`.
-  Override with `J2_PREFIX` and `J2_BINDIR`.
-- Homebrew: `brew install --formula deploy/Formula/j2.rb`.
+For the tarball, extract it and run `./install.sh` inside the extracted
+`j2-0.2.0-aarch64-apple-darwin` directory. It installs to `~/.j2` and links `j2`
+into `/usr/local/bin`. Use `J2_PREFIX` and `J2_BINDIR` to choose other locations.
+The older `j` alias is kept when it does not replace another program.
 
-## Code signing
+The `.pkg` installer uses `/usr/local/j2` and `/usr/local/bin/j2`.
+The Homebrew formula is `deploy/Formula/j2.rb` in the source tree and
+`Formula/j2.rb` at the root of the public repository.
 
-Gatekeeper blocks downloaded binaries unless they are signed with a Developer
-ID Application certificate and notarized. This needs an Apple Developer account:
+## Signing details
 
-1. Create a Developer ID Application certificate in Keychain.
-2. Store a notarytool profile: `xcrun notarytool store-credentials <name>`.
-3. `DEVELOPER_ID="Developer ID Application: NAME (TEAMID)" NOTARY_PROFILE=<name> deploy/sign.sh <bundle>`.
+The compiler loads proc macros built on the user's machine. Its hardened
+runtime signature needs `com.apple.security.cs.disable-library-validation`,
+which `sign.sh` applies to `toolchain/bin/rustc`. Removing it prevents native
+builds that use those dependencies.
 
-To staple, wrap the bundle in a `.pkg` or `.dmg` and staple that. Unsigned
-bundles still run after `xattr -dr com.apple.quarantine <bundle>`.
+A Developer ID Application identity signs the executables and libraries.
+A separate Developer ID Installer identity signs the `.pkg` container.
+Notarize both the ZIP and installer, and staple the installer after Apple
+accepts it. A plain directory or ZIP cannot hold a stapled ticket.
 
 ## Build cache
 
-The cargo target cache holds absolute paths, so it is not prebuilt into the
-bundle. `install.sh` warms it once at the final location. The interpreter never
-needs it; the warm-up only speeds the first `j2 build`.
+Cargo caches contain absolute paths, so the release does not include a built
+cache. `install.sh` warms it at the final location. The interpreter is ready
+immediately; the cache only speeds up native builds.

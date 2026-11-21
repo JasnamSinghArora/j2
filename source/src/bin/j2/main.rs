@@ -593,19 +593,24 @@ opt-level = 3
 /// copying the result also works with an explicit CARGO_TARGET_DIR override.
 fn cargo_build_system(tmp: &Path, runtime_path: &Path) -> Result<PathBuf, String> {
     let cargo_bin = locate_bundled_cargo();
+    let backend = bundled_serial_backend(
+        &cargo_bin, locate_forked_backend().as_deref(), env::var_os("RUSTC").as_deref(),
+    );
     let caller_dir = env::current_dir().map_err(|e| format!("current directory: {}", e))?;
     let target_dir = system_target_dir(
-        &cargo_bin, runtime_path, env::var_os("CARGO_TARGET_DIR").as_deref(), &caller_dir,
+        &cargo_bin, runtime_path, backend.as_deref(),
+        env::var_os("CARGO_TARGET_DIR").as_deref(), &caller_dir,
     );
     fs::create_dir_all(&target_dir).map_err(|e| format!("mkdir {}: {}", target_dir.display(), e))?;
     let mut args: Vec<&str> = vec!["build", "--release", "--quiet"];
     if locate_j_vendor().is_some() { args.push("--offline"); }
     // Capture (don't inherit) so no backend toolchain output reaches the user.
-    let out = Command::new(&cargo_bin)
-        .current_dir(tmp)
+    let mut command = Command::new(&cargo_bin);
+    command.current_dir(tmp)
         .args(&args)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()
+        .env("CARGO_TARGET_DIR", &target_dir);
+    configure_serial_backend(&mut command, &target_dir, backend.as_deref())?;
+    let out = command.output()
         .map_err(|e| format!("invoke cargo: {}", e))?;
     if !out.status.success() {
         // A failure here means the lowered program didn't compile - a J
@@ -623,6 +628,37 @@ fn cargo_build_system(tmp: &Path, runtime_path: &Path) -> Result<PathBuf, String
     Ok(target_dir)
 }
 
+/// Cargo does not automatically use the rustc beside it. Select that compiler
+/// only for the known bundled pair; keep explicit RUSTC and system Cargo alone.
+fn bundled_serial_backend(
+    cargo_bin: &std::ffi::OsStr,
+    backend: Option<&Path>,
+    rustc_override: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if rustc_override.is_some() { return None; }
+    let backend = backend?;
+    let paired_cargo = backend.parent()?.join("cargo");
+    if Path::new(cargo_bin).canonicalize().ok()? == paired_cargo.canonicalize().ok()? {
+        Some(backend.to_path_buf())
+    } else {
+        None
+    }
+}
+
+fn configure_serial_backend(
+    command: &mut Command,
+    cache: &Path,
+    backend: Option<&Path>,
+) -> Result<(), String> {
+    if let Some(backend) = backend {
+        let wrapper = write_backend_wrapper(cache, backend)?;
+        // The bundled compiler enables its MIR pass by default. With no target
+        // crate, the wrapper disables it for the program and every dependency.
+        command.env("RUSTC", wrapper).env_remove("J2_TARGET_CRATE");
+    }
+    Ok(())
+}
+
 /// An explicit target directory belongs to the caller; resolve relative paths
 /// before switching Cargo's working directory to the generated project. The
 /// default is independent of the program's path/PID, so dependency artifacts
@@ -630,6 +666,7 @@ fn cargo_build_system(tmp: &Path, runtime_path: &Path) -> Result<PathBuf, String
 fn system_target_dir(
     cargo_bin: &std::ffi::OsStr,
     runtime_path: &Path,
+    bundled_backend: Option<&Path>,
     override_dir: Option<&std::ffi::OsStr>,
     caller_dir: &Path,
 ) -> PathBuf {
@@ -642,6 +679,7 @@ fn system_target_dir(
     let mut h = DefaultHasher::new();
     cargo_bin.hash(&mut h);
     runtime_path.canonicalize().unwrap_or_else(|_| runtime_path.to_path_buf()).hash(&mut h);
+    bundled_backend.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf())).hash(&mut h);
     env::var_os("RUSTC").hash(&mut h);
     env::var_os("RUSTUP_TOOLCHAIN").hash(&mut h);
     env::temp_dir().join(format!("j2_serial_target_{:x}", h.finish()))
@@ -1042,15 +1080,74 @@ mod cache_tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn bundled_serial_build_uses_its_compiler_without_path_or_parallelism() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let f = Fixture::new();
+        let cargo = f.write("bundle with spaces/bin/cargo",
+            "#!/bin/sh\nexec \"$RUSTC\" --crate-name j2_program -vV\n");
+        let rustc = f.write("bundle with spaces/bin/rustc",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
+        for p in [&cargo, &rustc] {
+            fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let backend = bundled_serial_backend(cargo.as_os_str(), Some(&rustc), None);
+        assert_eq!(backend.as_deref(), Some(rustc.as_path()));
+        let mut command = Command::new(&cargo);
+        command.env_clear().env("PATH", "")
+            .env("J2_TARGET_CRATE", "j2_program").env("J2_PAR_DUMP", "1");
+        configure_serial_backend(&mut command, &f.0, backend.as_deref()).unwrap();
+        let out = command.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let args = String::from_utf8(out.stdout).unwrap();
+        assert!(args.contains("-vV\n"), "Cargo must reach the bundled compiler");
+        assert!(args.contains("-C\nparallelize=off\n"));
+        assert!(!args.contains("parallelize=on"));
+        assert!(!args.contains("j2_parallelize"));
+        assert!(!args.contains("par-dump"));
+    }
+
+    #[test]
+    fn serial_compiler_selection_preserves_overrides_and_system_cargo() {
+        let f = Fixture::new();
+        let cargo = f.write("bundle/bin/cargo", "");
+        let rustc = f.write("bundle/bin/rustc", "");
+        let system_cargo = f.write("system/bin/cargo", "");
+        for override_rustc in ["/chosen/rustc", ""] {
+            let backend = bundled_serial_backend(
+                cargo.as_os_str(), Some(&rustc), Some(override_rustc.as_ref()),
+            );
+            assert!(backend.is_none());
+            let mut command = Command::new(&cargo);
+            command.env("RUSTC", override_rustc);
+            configure_serial_backend(&mut command, &f.0, backend.as_deref()).unwrap();
+            assert_eq!(command.get_envs().collect::<Vec<_>>(),
+                vec![(std::ffi::OsStr::new("RUSTC"), Some(std::ffi::OsStr::new(override_rustc)))]);
+        }
+        assert!(bundled_serial_backend(system_cargo.as_os_str(), Some(&rustc), None).is_none());
+        assert!(bundled_serial_backend(cargo.as_os_str(), None, None).is_none());
+        let mut command = Command::new(&system_cargo);
+        configure_serial_backend(&mut command, &f.0, None).unwrap();
+        assert_eq!(command.get_envs().count(), 0);
+    }
+
     #[test]
     fn serial_dependency_cache_is_shared_across_program_locations() {
         let f = Fixture::new();
         let runtime = f.0.join("runtime");
-        let first = system_target_dir("cargo".as_ref(), &runtime, None, &f.0.join("project-a"));
-        let second = system_target_dir("cargo".as_ref(), &runtime, None, &f.0.join("project-b"));
+        let first = system_target_dir("cargo".as_ref(), &runtime, None, None, &f.0.join("project-a"));
+        let second = system_target_dir("cargo".as_ref(), &runtime, None, None, &f.0.join("project-b"));
         assert_eq!(first, second);
-        assert_ne!(first, system_target_dir("other-cargo".as_ref(), &runtime, None, &f.0));
-        assert_ne!(first, system_target_dir("cargo".as_ref(), &f.0.join("other-runtime"), None, &f.0));
+        assert_ne!(first, system_target_dir("other-cargo".as_ref(), &runtime, None, None, &f.0));
+        assert_ne!(first, system_target_dir("cargo".as_ref(), &f.0.join("other-runtime"), None, None, &f.0));
+        let backend = f.0.join("bundle/rustc");
+        let bundled = system_target_dir("cargo".as_ref(), &runtime, Some(&backend), None, &f.0);
+        assert_ne!(first, bundled, "switching from system to bundled rustc must separate caches");
+        assert_ne!(bundled, system_target_dir(
+            "cargo".as_ref(), &runtime, Some(&f.0.join("other/rustc")), None, &f.0,
+        ));
     }
 
     #[test]
@@ -1059,11 +1156,11 @@ mod cache_tests {
         let runtime = f.0.join("runtime");
         let absolute = f.0.join("chosen-target");
         assert_eq!(
-            system_target_dir("cargo".as_ref(), &runtime, Some(absolute.as_os_str()), &f.0),
+            system_target_dir("cargo".as_ref(), &runtime, None, Some(absolute.as_os_str()), &f.0),
             absolute,
         );
         assert_eq!(
-            system_target_dir("cargo".as_ref(), &runtime, Some("relative-target".as_ref()), &f.0),
+            system_target_dir("cargo".as_ref(), &runtime, None, Some("relative-target".as_ref()), &f.0),
             f.0.join("relative-target"),
         );
     }

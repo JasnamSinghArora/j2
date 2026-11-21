@@ -3,21 +3,21 @@
 J2 is a programming language with an interpreter and a native compiler. Native
 builds can run independent loops and function calls across multiple CPU cores.
 
-## Versions
+## Download v2
 
-| Version | Status | Where to find it |
-|---|---|---|
-| v1 (`0.1.0`) | Published release for macOS Apple Silicon | [Downloads](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0) and the [`main` branch](https://github.com/JasnamSinghArora/j2/tree/main) |
-| v2 (`0.2.0-dev`) | Development source; no v2 installer yet | The [`v2` branch](https://github.com/JasnamSinghArora/j2/tree/v2) |
+J2 v2 (`0.2.0`) is the current release for macOS on Apple Silicon. Get the
+[installer or archive](https://j2-lang.org/download.html) to start using it.
+Cloning this repository or downloading its `main` branch gives you the v2 source.
 
-The v1 downloads remain available. This branch contains v2 development work.
-See the [version guide](https://j2-lang.org/docs/versions.html) and
-[v2 development notes](source/V2_NOTES.md) for the differences.
+The previous [v1 (`0.1.0`) release](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0)
+remains available in the release history. See the
+[version guide](https://j2-lang.org/docs/versions.html) and
+[v2 release notes](source/V2_NOTES.md) for the changes.
 
 - Run a program with `j2 file.j2` without a build step.
 - Compile a native binary with `j2 build file.j2 -o out`. The compiler
   parallelizes supported patterns when it can establish that they are safe.
-- The v1 download includes the compiler, runtime, and libraries for offline builds.
+- The download includes the compiler, runtime, and libraries for offline builds.
 - The VS Code extension provides syntax highlighting, a Run command, and inline errors.
 
 ## What v2 adds
@@ -37,17 +37,17 @@ items = [1, 2, 3,]
 ```
 
 Use a native build to try the parallel paths. `J2_PARALLEL=0` runs them serially.
-The [development notes](source/V2_NOTES.md) describe supported cases, fallback
+The [release notes](source/V2_NOTES.md) describe supported cases, fallback
 behavior, correctness fixes, and validation.
 
-## Install v1 (macOS, Apple Silicon)
+## Install v2 (macOS, Apple Silicon)
 
-Download `j2-0.1.0-aarch64-apple-darwin.tar.gz` from the
-[v1 release](https://github.com/JasnamSinghArora/j2/releases/tag/v0.1.0), then:
+Download `j2-0.2.0-aarch64-apple-darwin.tar.gz` from the
+[v2 release](https://github.com/JasnamSinghArora/j2/releases/tag/v0.2.0), then:
 
 ```sh
-tar xzf j2-0.1.0-aarch64-apple-darwin.tar.gz
-cd j2-0.1.0-aarch64-apple-darwin
+tar xzf j2-0.2.0-aarch64-apple-darwin.tar.gz
+cd j2-0.2.0-aarch64-apple-darwin
 ./install.sh
 ```
 
@@ -63,10 +63,10 @@ are missing, install them with `xcode-select --install`.
 
 ## Build v2 from source
 
-Install Rust and Cargo, then build the development driver:
+Install Rust and Cargo, then build the driver:
 
 ```sh
-git clone --branch v2 https://github.com/JasnamSinghArora/j2.git
+git clone https://github.com/JasnamSinghArora/j2.git
 cd j2/source
 cargo build --release --manifest-path src/bin/j2/Cargo.toml
 ./src/bin/j2/target/release/j2 --version
@@ -74,9 +74,9 @@ cargo build --release --manifest-path src/bin/j2/Cargo.toml
 ./hello
 ```
 
-The driver reports `0.2.0-dev`. Building it does not replace an installed v1
-command. The new collection and indexed-loop helpers work with stock Rust;
-the existing MIR parallelization passes require the forked backend. See
+The driver reports `0.2.0`. The new collection and indexed-loop helpers work
+with stock Rust; the existing MIR parallelization passes require the forked
+backend. See
 [source build details](source/README.md).
 
 ## Documentation
@@ -86,11 +86,11 @@ library, CLI commands, and automatic parallelism.
 
 ## VS Code extension
 
-The published extension is v1. Download `j2-lang-0.1.0.vsix` from
-[Releases](https://github.com/JasnamSinghArora/j2/releases) and run:
+Download `j2-lang-0.2.0.vsix` from the
+[v2 release](https://github.com/JasnamSinghArora/j2/releases/tag/v0.2.0) and run:
 
 ```sh
-code --install-extension j2-lang-0.1.0.vsix
+code --install-extension j2-lang-0.2.0.vsix
 ```
 
 The extension highlights `.j2` files, adds a Run button (`Cmd+Shift+R`), and shows

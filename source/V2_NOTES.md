@@ -1,19 +1,19 @@
-# J2 v2 development notes
+# J2 v2 release notes
 
-v1 is the published `0.1.0` release. v2 is `0.2.0-dev`, developed on the `v2`
-branch. The v1 downloads have not been replaced, and no v2 installer is available
-yet. Build the development driver to try the changes below.
+v2 (`0.2.0`) is the current release. Get the installer, archives, or VS Code
+extension from [Downloads](https://j2-lang.org/download.html). The `main` branch
+contains v2. The previous v1 (`0.1.0`) release remains in the release history.
 
 v2 expands collection and indexed-loop parallelism and adds two syntax shortcuts.
 Existing syntax and the MIR parallelizer remain available.
 
-| Area | v1 (`0.1.0`) | v2 (`0.2.0-dev`) |
+| Area | v1 (`0.1.0`) | v2 (`0.2.0`) |
 | --- | --- | --- |
 | Parallel work | Supported loop patterns, numeric kernels, and independent native calls | Adds more maps, filters, pipes, and independent indexed writes |
 | Callbacks | Explicit functions and existing condition syntax | Adds `_` shorthand, with more callback bodies eligible for parallel execution |
 | Array captures | Existing execution paths | Read-only numeric array captures can use the new parallel helpers |
 | Syntax | Existing literals, calls, and parameters | Also accepts trailing commas |
-| Availability | Published macOS Apple Silicon downloads | Development source; build locally |
+| Availability | Previous release in the release history | Current macOS Apple Silicon downloads and source on `main` |
 
 ## More automatic parallelism
 
@@ -131,6 +131,9 @@ compiler versions cannot overwrite or reuse each other's generated code.
 
 ## Correctness fixes
 
+- Serial native builds use the bundled compiler when Rust is not installed.
+  The bundled compiler keeps its MIR parallelizer disabled in serial mode;
+  explicit `RUSTC` settings and system toolchain builds keep their behavior.
 - Large integer sums preserve checked sequential overflow behavior, including
   overflow followed by cancellation. Float sums retain source addition order.
 - Inline native callback arithmetic preserves checked integer addition/
@@ -179,7 +182,7 @@ upstream Rust test suite has been validated.
 
 ## Verified in this workspace
 
-On macOS arm64, the completed checks passed: 86 focused compiler/runtime/driver
+On macOS arm64, the completed checks passed: 88 focused compiler/runtime/driver
 tests; 42 deterministic programs compared across four execution modes; all eight
 original reference checksums; and a 124-file parse/lower sweep. Cache invalidation,
 concurrent-run, atomic-wrapper-publication, and harness-failure regressions also
@@ -187,6 +190,3 @@ passed. The new collection and indexed-loop fixtures passed on stock Rust, and
 the loop fixture passed on the forked backend without serial fallback. Aliasing,
 numeric representation, error-prefix, callback-scope, and generated-name cases
 are covered by dedicated regressions.
-
-The development driver was rebuilt at `src/bin/j2/target/release/j2`. The installed
-system command and release bundles have not been replaced.
